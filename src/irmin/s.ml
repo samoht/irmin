@@ -49,14 +49,24 @@ module type PATH = sig
 end
 
 module type HASH = sig
-  type t
+  type t = private string
   val pp: t Fmt.t
   val of_string: string -> (t, [`Msg of string]) result
+  val of_raw: string -> t
   val digest: 'a Type.t -> 'a -> t
-  val has_kind: [> `SHA1] -> bool
-  val to_raw: t -> Cstruct.t
-  val of_raw: Cstruct.t -> t
-  val to_raw_int: t -> int
+  val digest_string: string -> t
+  val kind: [
+    | `SHA1
+    | `RMD160
+    | `SHA224
+    | `SHA256
+    | `SHA384
+    | `SHA512
+    | `BLAKE2B
+    | `BLAKE2S
+    | `Other of string
+  ]
+  val hash: t -> int
   val digest_size: int
   val t: t Type.t
 end
@@ -79,8 +89,19 @@ module type RO_MAKER =
   functor (V: S0) ->
     RO with type key = K.t and type value = V.t
 
+module type RAO = sig
+  include RO with type value = bytes
+  val add: t -> key -> value -> unit Lwt.t
+end
+
+module type RAO_MAKER = functor (K: HASH) ->
+sig
+  include RAO with type key = K.t
+  val v: Conf.t -> t Lwt.t
+end
+
 module type AO = sig
-  include RO
+  include RO with type key = private string
   val add: t -> value -> key Lwt.t
 end
 
@@ -157,6 +178,7 @@ module type NODE_STORE = sig
   module Val: NODE
     with type t = value
      and type node = key
+     and type contents = private string
      and type metadata = Metadata.t
      and type step = Path.step
   module Contents: CONTENTS_STORE with type key = Val.contents
@@ -184,6 +206,7 @@ module type COMMIT_STORE = sig
   module Key: HASH with type t = key
   module Val: COMMIT
     with type t = value
+     and type node = private string
      and type commit = key
   module Node: NODE_STORE with type key = Val.node
 end
@@ -263,7 +286,7 @@ sig
 end
 
 module type BRANCH_STORE = sig
-  include RW
+  include RW with type value = private string
   val list: t -> key list Lwt.t
   module Key: BRANCH with type t = key
   module Val: HASH with type t = value

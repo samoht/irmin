@@ -51,12 +51,16 @@ module Make (P: S.PRIVATE) = struct
       let lenp = len (fun (_, v) -> Some v)
       let leno = len (fun x -> x)
 
+      let f s = Fmt.strf "%s.%s" M.store s
+
       let find =
-        let data v = Data.v [uint "find" (leno v) ~graph:g ~unit:"Bytes"] in
+        let f = f "find" in
+        let data v = Data.v [uint f (leno v) ~graph:g ~unit:"Bytes"] in
         Src.v "AO.find" ~tags ~data ~duration:true ~status:true
 
       let add =
-        let data v = Data.v [uint "add" (lenp v) ~graph:g ~unit:"Bytes"] in
+        let f = f "add" in
+        let data v = Data.v [uint f (lenp v) ~graph:g ~unit:"Bytes"] in
         Src.v "AO.add" ~tags ~data ~duration:true ~status:true
 
     end
@@ -89,7 +93,7 @@ module Make (P: S.PRIVATE) = struct
   end = struct
 
     let g =
-      let title = "Irmin: reference store (RW)" in
+      let title = "Irmin: ref store (RW)" in
       Metrics.Graph.v ~title ~ylabel:"I/O" ~yunit:"Bytes" ()
 
     module X = struct
@@ -115,32 +119,27 @@ module Make (P: S.PRIVATE) = struct
         | Ok l    -> List.length l
         | Error _ -> 0
 
-      let mem =
-        let data _ = Data.v [uint "mem" ~graph:g 1] in
-        Src.v "RW.mem" ~tags ~data ~duration:true ~status:true
-
       let find =
-        let data v = Data.v [uint "find" (leno v) ~graph:g ~unit:"Bytes"] in
+        let data v = Data.v [uint "Ref.find" (leno v) ~graph:g ~unit:"Bytes"] in
         Src.v "RW.find" ~tags ~data ~duration:true ~status:true
 
       let set =
-        let data v = Data.v [uint "set" (len v) ~graph:g ~unit:"Bytes"] in
+        let data v = Data.v [uint "Ref.set" (len v) ~graph:g ~unit:"Bytes"] in
         Src.v "RW.test" ~tags ~data ~duration:true ~status:true
 
       let test_and_set =
         let data v =
-          Data.v [uint "test-and-set" (lenop v) ~graph:g  ~unit:"Bytes"]
+          Data.v [uint "Ref.test-and-set" (lenop v) ~graph:g  ~unit:"Bytes"]
         in
         Src.v "RW.test_and_set" ~tags ~data ~duration:true ~status:true
 
       let remove =
-        let data _ = Data.v [uint "remove" ~graph:g 1] in
-        Src.v "RW.remove_set" ~tags ~data ~duration:true ~status:true
+        let data v = Data.v [uint "Ref.remove" (leno v) ~graph:g ~unit:"Bytes"] in
+        Src.v "RW.remove" ~tags ~data ~duration:true ~status:true
 
       let list =
-        let data v =
-          Data.v [uint "children" (lenl v) ~graph:g ~unit:"Number of children"]
-        in
+        let graph = Graph.v ~title:"Irmin: RW.list" () in
+        let data v = Data.v [uint "Ref.list" (lenl v) ~graph ~unit:"# children"] in
         Src.v "RW.list" ~tags ~data ~duration:true ~status:true
 
       let watch =
@@ -159,8 +158,7 @@ module Make (P: S.PRIVATE) = struct
     let tag t f = f t.id
     let v ~id v = { v; id; watches = 0 }
 
-    let mem t k =
-      Metrics_lwt.run X.mem (tag t) (fun () -> M.mem t.v k)
+    let mem t k = M.mem t.v k
 
     let find t k =
       Metrics_lwt.run X.find (tag t) (fun () -> M.find t.v k)
@@ -175,7 +173,10 @@ module Make (P: S.PRIVATE) = struct
       >|= fun (b, _) -> b
 
     let remove t k =
-      Metrics_lwt.run X.remove (tag t) (fun () -> M.remove t.v k)
+      let v = if Metrics.is_active X.remove then Lwt.return None else M.find t.v k in
+      v >>= fun v ->
+      Metrics_lwt.run X.remove (tag t) (fun () -> M.remove t.v k >|= fun () -> v)
+      >|= fun _ -> ()
 
     let list t =
       Metrics_lwt.run X.list (tag t) (fun () -> M.list t.v)

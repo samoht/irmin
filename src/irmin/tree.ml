@@ -354,7 +354,7 @@ module Make (P: S.PRIVATE) = struct
 
     module Keys = Hashtbl.Make(struct
         type t = P.Node.key
-        let hash = P.Node.Key.to_raw_int
+        let hash = P.Node.Key.hash
         let equal = Type.equal P.Node.Key.t
       end)
 
@@ -755,40 +755,32 @@ module Make (P: S.PRIVATE) = struct
     | Some (path, file) ->
       let rec aux view path =
         match Path.decons path with
-        | None        -> begin
+        | None        -> (
             Node.findv view file >>= function old ->
             match old with
-            | Some old -> begin
-                equal old v >>= function
-                | true -> Lwt.return_none
-                | false ->
-                  Node.add view file (with_setm v) >>= fun t ->
-                  Lwt.return (Some t)
-              end
-            | None ->
-              Node.add view file (with_setm v) >>= fun t ->
-              Lwt.return (Some t)
-          end
+            | None     -> Node.add view file (with_setm v) >|= fun t -> Some t
+            | Some old ->
+              equal old v >>= function
+              | true  -> Lwt.return_none
+              | false -> Node.add view file (with_setm v) >|= fun t -> Some t )
         | Some (h, p) ->
           Node.findv view h >>= function
-          | None | Some (`Contents _) -> begin
-            aux Node.empty p >>= function
-            | None -> Lwt.return_none
-            | Some child' ->
-              Node.add view h (`Node child') >>= fun t ->
-              Lwt.return (Some t)
-            end
+          | None | Some (`Contents _) -> (
+              aux Node.empty p >>= function
+              | None        -> Lwt.return_none
+              | Some child' ->
+                Node.add view h (`Node child') >|= fun t -> Some t )
           | Some (`Node child) ->
             aux child p >>= function
-            | None -> Lwt.return_none
+            | None        -> Lwt.return_none
             | Some child' ->
-              Node.add view h (`Node child') >>= fun t ->
-              Lwt.return (Some t)
+              Node.add view h (`Node child') >|= fun t ->
+              Some t
       in
       let n = match t with `Node n -> n | _ -> Node.empty in
-      aux n path >>= function
-      | None -> Lwt.return t
-      | Some node -> Lwt.return (`Node node)
+      aux n path >|= function
+      | None      -> t
+      | Some node -> `Node node
 
   let with_optm m c = match m with
     | None   -> `Contents (`Keep c)

@@ -732,12 +732,29 @@ module type AO = sig
       to add values. Keys are derived from the values raw contents and
       hence are deterministic. *)
 
-  include RO
+  include RO with type key = private string
 
   val add: t -> value -> key Lwt.t
   (** Write the contents of a value to the store. It's the
       responsibility of the append-only store to generate a
       consistent key. *)
+
+end
+
+(** Raw Append-only backend store. *)
+module type RAO = sig
+
+  (** {1 Raw Append-only stores}
+
+     Raw Append-only stores are similar to {{!AO}append-only store}
+     but the using raw value and where {!add} is takes both the key
+     and the value. *)
+
+  include RO with type value = bytes
+
+  val add: t -> key -> value -> unit Lwt.t
+  (** [add t k v] binds the [k] to [v] in [t]. [k] is usually
+     deterministicaly computed from [v] (for instance its digest). *)
 
 end
 
@@ -908,32 +925,46 @@ module Hash: sig
 
   module type S = sig
 
-    (** Signature for unique identifiers. *)
+    (** Signature for digest hashes, inspired by Digestif. *)
 
-    type t
+    type t = private string
     (** The type for digest hashes. *)
 
     val pp: t Fmt.t
-    (** [pp] is the user-facing pretty-printer for paths. *)
+    (** [pp] is the pretty-printer for hashes, usually using a base64
+       representation. *)
 
     val of_string: string -> (t, [`Msg of string]) result
     (** [of_string] parses paths. *)
 
+    val of_raw: string -> t
+    (** [of_string s] cast [s] to a hash. Raise [Invalid_argument _]
+       if [String.length s] is not {!digest_size}. *)
+
     val digest: 'a Type.t -> 'a -> t
-    (** Compute a deterministic store key from a {!Cstruct.t} value. *)
+    (** Compute a deterministic store key from a typed value. *)
 
-    val has_kind: [> `SHA1] -> bool
-    (** The kind of generated hash. *)
+    val digest_string: string -> t
+    (** Compute a deterministic store key from a string. *)
 
-    val to_raw: t -> Cstruct.t
-    (** The raw hash value. *)
+    val kind: [
+      | `SHA1
+      | `RMD160
+      | `SHA224
+      | `SHA256
+      | `SHA384
+      | `SHA512
+      | `BLAKE2B
+      | `BLAKE2S
+      | `Other of string
+    ]
+    (** The kind of hashes. Compared to Digestif, we do not expose
+       [MD5] as we really do not want to use it to build content
+       adressable stores. *)
 
-    val of_raw: Cstruct.t -> t
-    (** Abstract a hash value. *)
-
-    val to_raw_int: t -> int
-    (* A smaller hash, to be used for instance as the `hash` function
-       of an OCaml [Hashtbl]. *)
+    val hash: t -> int
+    (** [hash h] is a small hash of [h], to be used for instance as
+       the `hash` function of an OCaml [Hashtbl]. *)
 
     val digest_size: int
     (** [digest_size] is the size of hash results, in bytes. *)
@@ -946,8 +977,17 @@ module Hash: sig
   end
   (** Signature for hash values. *)
 
+  module Make (H: Digestif.S): S with type t = H.t
+  (** Digestif hashes *)
+
   module SHA1: S
-  (** SHA1 digests *)
+  module RMD160: S
+  module SHA224: S
+  module SHA256: S
+  module SHA384: S
+  module SHA512: S
+  module BLABE2B: S
+  module BLABE2S: S
 
 end
 
@@ -1072,8 +1112,9 @@ module Contents: sig
   ]
 
   module Json: S with type t = (string * json) list
-  (** [Json] contents are associations from string to [json] value stored as JSON encoded strings.
-     If the same JSON key has been modified concurrently with different values then the [merge]
+  (** [Json] contents are associations from string to [json] value
+     stored as JSON encoded strings.  If the same JSON key has been
+     modified concurrently with different values then the [merge]
      function conflicts. *)
 
   module Json_value: S with type t = json
@@ -1160,9 +1201,9 @@ module Branch: sig
       are head commmits. *)
   module type STORE = sig
 
-    (** {1 Reference Store} *)
+    (** {1 Branch Store} *)
 
-    include RW
+    include RW with type value = private string
 
     val list: t -> key list Lwt.t
     (** [list t] list all the branches present in [t]. *)
@@ -1526,6 +1567,7 @@ module Private: sig
 
       (** [Val] provides base functions for node values. *)
       module Val: S with type t = value
+                     and type contents = private string
                      and type node = key
                      and type metadata = Metadata.t
                      and type step = Path.step
@@ -1722,7 +1764,9 @@ module Private: sig
       (** [Key] provides base functions for commit keys. *)
 
       (** [Val] provides functions for commit values. *)
-      module Val: S with type t = value and type commit = key
+      module Val: S with type t = value
+                     and type node = private string
+                     and type commit = key
 
       (** [Node] is the underlying node store. *)
       module Node: Node.STORE with type key = Val.node

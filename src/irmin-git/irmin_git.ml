@@ -86,17 +86,20 @@ module Hash (H: Git.HASH): Irmin.Hash.S with type t = H.t = struct
   type t = H.t
   let digest_size = H.Digest.length
   let t = Irmin.Type.(like string) H.of_hex H.to_hex
-  let digest t x =
-    let raw = Irmin.Type.encode_cstruct t x in
+
+  let digest_string s =
     let ctx = H.Digest.init () in
-    let ctx = H.Digest.feed ctx raw in
+    let ctx = H.Digest.feed_s ctx s in
     H.Digest.get ctx
-  let to_raw t = Cstruct.of_string @@ H.to_string t (* FIXME: avoid copy *)
-  let of_raw t = H.of_string @@ Cstruct.to_string t (* FIXME: avoid copy *)
-  let has_kind = function `SHA1 -> true | _ -> false (* FIXME: fixme *)
+
+  let digest t x =
+    let s = Irmin.Type.encode_string t x in
+    digest_string s
+
+  let kind = `SHA1 (* FIXME: fixme *)
   let pp ppf x = Fmt.string ppf (H.to_hex x)
   let of_string str = Ok (H.of_hex str)
-  let to_raw_int = Hashtbl.hash
+  let hash = Hashtbl.hash
 end
 
 module Make_private

@@ -126,6 +126,7 @@ module Make_ext = Store.Make
 
 module type RO = S.RO
 module type AO = S.AO
+module type RAO = S.RAO
 module type LINK = S.LINK
 module type RW = S.RW
 module type TREE = S.TREE
@@ -135,11 +136,21 @@ type config = Conf.t
 type 'a diff = 'a Diff.t
 
 module type AO_MAKER = S.AO_MAKER
-
+module type RAO_MAKER = S.RAO_MAKER
 module type LINK_MAKER = S.LINK_MAKER
-
 module type RW_MAKER = S.RW_MAKER
 module type S_MAKER = S.MAKER
+
+module AO (M: RAO_MAKER) (K: Hash.S) (V: Contents.S0):
+  AO with type key = K.t and type value = V.t =
+struct
+  module S = M(K)
+  include S
+  let add v =
+    let buf = Irmin.Type.encode_string V.t v in
+    let k = K.digest_string buf in
+    add k buf >|= fun () -> k
+end
 
 module type KV =
   S with type key = string list
