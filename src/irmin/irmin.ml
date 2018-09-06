@@ -145,11 +145,25 @@ module AO (M: RAO_MAKER) (K: Hash.S) (V: Contents.S0):
   AO with type key = K.t and type value = V.t =
 struct
   module S = M(K)
-  include S
-  let add v =
-    let buf = Irmin.Type.encode_string V.t v in
+
+  type key = K.t
+  type value = V.t
+  type t = S.t
+
+  let find t k =
+    S.find t k >|= function
+    | None as x -> x
+    | Some v    ->
+      match Type.decode_bytes V.t v with
+      | Ok v    -> Some v
+      | Error _ -> None
+
+  let mem = S.mem
+
+  let add t v =
+    let buf = Type.encode_bytes V.t v in
     let k = K.digest_string buf in
-    add k buf >|= fun () -> k
+    S.add t k buf >|= fun () -> k
 end
 
 module type KV =

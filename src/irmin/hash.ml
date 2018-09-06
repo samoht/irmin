@@ -19,18 +19,23 @@ module Make (H: Digestif.S) = struct
   let to_hex = H.to_hex
   let digest_size = H.digest_size
   let of_hex = H.consistent_of_hex
-  let digest_string = H.digest_string
+  let digest_string x = H.digest_string x
   let pp ppf x = Fmt.string ppf (to_hex x)
+  let to_raw_string = H.to_raw_string
 
-  let of_raw x =
-    if String.length x <> H.digest_size then invalid_arg "invalid digest size";
-    x
+  let digest t v =
+    let s = Type.encode_string t v in
+    H.digest_string s
+
+  let of_raw_string x =
+    try Ok (H.of_raw_string x)
+    with Invalid_argument e -> Error (`Msg e)
 
   let of_string x =
     try Ok (of_hex x)
     with Invalid_argument e -> Error (`Msg e)
 
-  external get_64 : Bytes.t -> int -> int64 = "%caml_string_get64"
+  external get_64: string -> int -> int64 = "%caml_string_get64u"
   let hash c = Int64.to_int (get_64 c 0)
   let t = Type.(like string) H.of_hex H.to_hex
 end
