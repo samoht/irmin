@@ -36,7 +36,8 @@ module Make (H: Digestif.S) = struct
     with Invalid_argument e -> Error (`Msg e)
 
   external get_64: string -> int -> int64 = "%caml_string_get64u"
-  let hash c = Int64.to_int (get_64 c 0)
+
+  let hash c = Int64.to_int (get_64 (H.to_raw_string c) 0)
   let t = Type.(like string) H.of_hex H.to_hex
 end
 

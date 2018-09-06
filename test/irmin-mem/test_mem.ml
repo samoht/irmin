@@ -24,11 +24,11 @@ module Link = struct
   let v () = v (Irmin_mem.config ())
 end
 
-let link = (module Link: Test_link.S)
+let link = (module Link: Irmin_test.Link.S)
 let config = Irmin_mem.config ()
 
 let clean () =
-  let (module S: Test_S) = store in
+  let (module S: S) = store in
   S.Repo.v config >>= fun repo ->
   S.Repo.branches repo >>= Lwt_list.iter_p (S.Branch.remove repo)
 

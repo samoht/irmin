@@ -31,7 +31,7 @@ let init () =
   IO.set_listen_hook ()
 
 let config = Irmin_fs.config test_db
-let link = (module Link: Test_link.S)
+let link = (module Link: Irmin_test.Link.S)
 let clean () = Lwt.return_unit
 let stats = None
 let store = store (module Irmin_fs.Make(IO)) (module Irmin.Metadata.None)

@@ -765,7 +765,7 @@ module type RAO = sig
      but the using raw value and where {!add} is takes both the key
      and the value. *)
 
-  include RO with type value = bytes
+  include RO with type value = string
 
   val add: t -> key -> value -> unit Lwt.t
   (** [add t k v] binds the [k] to [v] in [t]. [k] is usually
@@ -987,8 +987,8 @@ module Hash: sig
   module SHA256: S
   module SHA384: S
   module SHA512: S
-  module BLABE2B: S
-  module BLABE2S: S
+  module BLAKE2B: S
+  module BLAKE2S: S
 
 end
 

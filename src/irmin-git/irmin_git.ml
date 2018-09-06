@@ -810,7 +810,7 @@ end
 
 module Mem (H: Digestif.S) = struct
 
-  include Git.Mem.Make(H)(Inflate)(Deflate)
+  include Git.Mem.Make(H)(Git.Inflate)(Git.Deflate)
 
   let confs = Hashtbl.create 10 (* XXX: should probably be a weak table *)
 

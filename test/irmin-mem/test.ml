@@ -18,11 +18,11 @@ open Irmin_test
 
 let misc = [
   "link", [
-    Test_link.test "mem" Test_mem.link;
+    Link.test "mem" Test_mem.link;
   ]
 ]
 
 let () =
-  Test_store.run "irmin" ~misc [
+  Store.run "irmin" ~misc [
     `Quick , Test_mem.suite;
   ]

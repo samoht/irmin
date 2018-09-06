@@ -22,14 +22,12 @@ module Hash = Irmin.Hash.SHA1
 
 module Key = struct
   include Irmin.Hash.SHA1
-  let equal x y =
-    Cstruct.equal (to_raw x) (to_raw y)
+  let equal x y = String.equal (to_raw_string x) (to_raw_string y)
 end
 
 module Value = struct
   include Irmin.Contents.Cstruct
-  let equal x y =
-    Cstruct.equal x y
+  let equal x y = Cstruct.equal x y
 end
 
 module type S = sig
@@ -64,11 +62,10 @@ let store = store
 let config = Irmin_chunk.config ()
 
 let clean () =
-  let (module S: Test_S) = store in
+  let (module S: Irmin_test.S) = store in
   S.Repo.v config >>= fun repo ->
   S.Repo.branches repo >>= Lwt_list.iter_p (S.Branch.remove repo)
 
 let suite = {
   name = "CHUNK"; init; store; config; clean; stats=None;
 }
-

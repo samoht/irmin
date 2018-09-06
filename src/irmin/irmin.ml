@@ -154,14 +154,14 @@ struct
     S.find t k >|= function
     | None as x -> x
     | Some v    ->
-      match Type.decode_bytes V.t v with
+      match Type.decode_string V.t v with
       | Ok v    -> Some v
       | Error _ -> None
 
   let mem = S.mem
 
   let add t v =
-    let buf = Type.encode_bytes V.t v in
+    let buf = Type.encode_string V.t v in
     let k = K.digest_string buf in
     S.add t k buf >|= fun () -> k
 end

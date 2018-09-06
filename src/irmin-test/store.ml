@@ -16,7 +16,7 @@
 
 open Result
 open Lwt.Infix
-open Test_common
+open Common
 
 let src = Logs.Src.create "test" ~doc:"Irmin tests"
 module Log = (val Logs.src_log src : Logs.LOG)
@@ -46,7 +46,7 @@ let long_random_string = random_string (* 1024_000 *) 10
 let random_ascii_string n = String.init n (fun _i -> random_ascii ())
 let long_random_ascii_string = random_ascii_string 1024_000
 
-module Make (S: Test_S) = struct
+module Make (S: S) = struct
 
   module P = S.Private
   module Graph = Irmin.Private.Node.Graph(P.Node)

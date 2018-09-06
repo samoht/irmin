@@ -80,7 +80,7 @@ module type RO_MAKER =
     RO with type key = K.t and type value = V.t
 
 module type RAO = sig
-  include RO with type value = bytes
+  include RO with type value = string
   val add: t -> key -> value -> unit Lwt.t
 end
 

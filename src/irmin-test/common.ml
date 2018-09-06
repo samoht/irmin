@@ -16,7 +16,7 @@
 
 open Astring
 
-module type Test_S =
+module type S =
   Irmin.S with type step = string
     and type key = string list
     and type contents = string
@@ -56,7 +56,7 @@ let line msg =
   line ()
 
 let store:
-  (module Irmin.S_MAKER) -> (module Irmin.Metadata.S) -> (module Test_S) =
+  (module Irmin.S_MAKER) -> (module Irmin.Metadata.S) -> (module S) =
   fun (module B) (module M) ->
     let module S =
         B (M)
@@ -71,7 +71,7 @@ type t = {
   init  : unit -> unit Lwt.t;
   clean : unit -> unit Lwt.t;
   config: Irmin.config;
-  store : (module Test_S);
+  store : (module S);
   stats: (unit -> int * int) option;
 }
 

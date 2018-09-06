@@ -66,7 +66,6 @@ module Chunk (K: Irmin.Hash.S) = struct
       (fun (payload, padding) -> Indirect {payload; padding})
     |> sealv
 
-  let merge = Irmin.Merge.idempotent (Type.option t)
   let of_string s = Irmin.Type.decode_string t s
   let pp ppf v = Fmt.string ppf (Irmin.Type.encode_string t v)
 
@@ -129,10 +128,13 @@ module AO (S:AO_MAKER) (K:Irmin.Hash.S) (V: Irmin.Contents.Conv) = struct
       in
       aux l []
 
-    let rec add_key t = function
-      | []  -> invalid_arg "Irmin_chunk.Tree.add"
-      | [k] -> Lwt.return [k]
-      | l   -> add_keys t l >>= add_key t
+    let add t l =
+      let rec aux = function
+        | []  -> invalid_arg "Irmin_chunk.Tree.add"
+        | [k] -> Lwt.return k
+        | l   -> add_keys t l >>= aux
+      in
+      aux l
 
   end
 
@@ -159,6 +161,13 @@ module AO (S:AO_MAKER) (K:Irmin.Hash.S) (V: Irmin.Contents.Conv) = struct
     |Ok va   -> Some va
     |Error _ -> None
 
+  let list_range ~init ~stop ~step =
+    let rec aux acc n =
+      if n >= stop then List.rev acc
+      else aux (n :: acc) (n + step)
+    in
+    aux [] init
+
   let add t v =
     let buf = Irmin.Type.encode_bytes V.t v in
     let len = Bytes.length buf in
@@ -167,47 +176,23 @@ module AO (S:AO_MAKER) (K:Irmin.Hash.S) (V: Irmin.Contents.Conv) = struct
       let padding = Bytes.create (t.max_data - len) in
       AO.add t.db (Chunk.Data {payload; padding})
     ) else (
-      let rec aux off =
-        let len = min t.max_data (Bytes.length buf) in
+      let offs = list_range ~init:0 ~stop:len ~step:t.max_data in
+      let aux off =
+        let len = min t.max_data (Bytes.length buf - off) in
         let payload = Bytes.sub buf off len in
         let padding = Bytes.create (t.max_data - len) in
         AO.add t.db (Chunk.Data {payload; padding})
       in
-
-
-      let data = (* the number of data blocks *)
-        let x = len / t.max_length in
-        if rest_len = 0 then
-          { used = x; last = t.max_length }
-        else
-          { used = x + 1; last = rest_value_length }
-      in
-      let nodes = (* the number of tree nodes *)
-        let x = data.used / t.max_children in
-        let y = data.used mod t.max_children in
-        if y = 0 then
-          { used = x; last = t.max_children }
-        else
-          { used = x + 1; last = y }
-      in
-      let loop () =
-        let rec aux acc = function
-          | i when i = nodes.used -> Lwt.return (List.rev acc)
-          | i when i < nodes.used ->
-            split t ~data ~nodes i v >>= fun x ->
-            aux (x::acc) (i+1)
-          | _ -> assert false
-        in
-        aux [] 0
-      in
-      loop () >>= Tree.create t
+      Lwt_list.map_s aux offs >>= Tree.add t
     )
 
   let mem t key = AO.mem t.db key
 
 end
 
-module AO_stable (L: LINK_MAKER) (S: AO_MAKER) (K: Hash.S) (V: Irmin.Contents.Conv) = struct
+module AO_stable
+    (L: LINK_MAKER) (S: AO_MAKER) (K: Hash.S) (V: Irmin.Contents.Conv)
+= struct
 
   module AO = AO(S)(K)(V)
   module Link = L(K)
