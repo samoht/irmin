@@ -878,6 +878,8 @@ end
 let encode_cstruct (type a) (t: a t) (x: a) : Cstruct.t =
   match t with
   | Prim Cstruct -> x
+  | Prim String  -> Cstruct.of_string x
+  | Prim Bytes   -> Cstruct.of_bytes x
   | _ ->
     let len = Size_of.t t x in
     let buf = Cstruct.create len in

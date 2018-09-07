@@ -15,16 +15,22 @@
  *)
 
 open Lwt.Infix
-open Irmin_test
 
 let (/) = Filename.concat
 
-let uri = Uri.of_string "http://127.0.0.1:8080"
+let port name n =
+  let p = ref (8189 + n) in
+  String.iter (fun c ->
+      p := Char.code c + !p
+    ) name;
+  !p
 
-let pid_file = Filename.get_temp_dir_name () / "irmin-test.pid"
+let uri name n = Fmt.kstrf Uri.of_string "http://127.0.0.1:%d" (port name n)
+let pid_file n = Filename.get_temp_dir_name () / Fmt.strf "irmin-http.%d.pid" n
 
-let http_store (module S: Test_S) =
-  store (module Irmin_http.Make(Cohttp_lwt_unix.Client)) (module S.Metadata)
+let http_store (module S: Irmin_test.S) =
+  Irmin_test.store
+    (module Irmin_http.Make(Cohttp_lwt_unix.Client)) (module S.Metadata)
 
 (* See https://github.com/mirage/ocaml-cohttp/issues/511 *)
 let () = Lwt.async_exception_hook := (fun e ->
@@ -33,7 +39,8 @@ let () = Lwt.async_exception_hook := (fun e ->
 
 let remove file = try Unix.unlink file with _ -> ()
 
-let signal pid =
+let signal n pid =
+  let pid_file = pid_file n in
   let oc = open_out pid_file in
   Logs.debug (fun l -> l "write PID %d in %s" pid pid_file);
   output_string oc (string_of_int pid);
@@ -41,19 +48,22 @@ let signal pid =
   close_out oc;
   Lwt.return_unit
 
-let rec wait_for_the_server_to_start () =
+let rec wait_for_the_server_to_start name n =
+  let pid_file = pid_file n in
   if Sys.file_exists pid_file then (
     let ic = open_in pid_file in
     let line = input_line ic in
     close_in ic;
     let pid = int_of_string line in
-    Logs.debug (fun l -> l "read PID %d fomr %s" pid pid_file);
+    Logs.debug (fun l ->
+        l "read PID %d fomr %s (port=%d)" pid pid_file (port name n));
     Unix.unlink pid_file;
     Lwt.return pid
   ) else (
-    Logs.debug (fun l -> l "waiting for the server to start...");
+    Logs.debug (fun l ->
+        l "waiting for the server to start... (pid=%s)" pid_file);
     Lwt_unix.sleep 0.1 >>= fun () ->
-    wait_for_the_server_to_start ()
+    wait_for_the_server_to_start name n
   )
 
 let servers = [
@@ -63,46 +73,62 @@ let servers = [
 
 let root c = Irmin.Private.Conf.(get c root)
 
+let client_name n = Fmt.strf "HTTP.%s" n
+
 let serve servers n =
   Logs.set_level ~all:true (Some Logs.Debug);
   Logs.debug (fun l -> l "pwd: %s" @@ Unix.getcwd ());
   let (_, server) = List.nth servers n in
-  Logs.debug (fun l -> l "Got server: %s, root=%a"
-                 server.name Fmt.(option string) (root server.config));
-  let (module Server: Test_S) = server.store in
+  let name = server.Irmin_test.name in
+  let port = port (client_name name) n in
+  Logs.debug (fun l ->
+      l "Got server: %s, port=%d root=%a"
+        name port Fmt.(option string) (root server.config));
+  let (module Server: Irmin_test.S) = server.store in
   let module HTTP = Irmin_http_server.Make(Cohttp_lwt_unix.Server)(Server) in
   let server () =
     server.init () >>= fun () ->
     Server.Repo.v server.config >>= fun repo ->
-    signal (Unix.getpid ()) >>= fun () ->
+    signal n (Unix.getpid ()) >>= fun () ->
     let spec = HTTP.v repo ~strict:false in
-    Cohttp_lwt_unix.Server.create ~mode:(`TCP (`Port 8080)) spec
+    let mode = `TCP (`Port port) in
+    Cohttp_lwt_unix.Server.create ~mode spec
   in
   Lwt_main.run (server ())
 
+let () = Sys.catch_break false
+
 let suite i server =
   let server_pid = ref 0 in
-  { name = Printf.sprintf "HTTP.%s" server.name;
+  let kill_server () =
+    if !server_pid <> 0 then (
+      Printf.printf "Killing %d\n%!" !server_pid;
+      try Unix.kill !server_pid Sys.sigkill
+      with Unix.Unix_error (Unix.ESRCH, _, _) -> ()
+    ) in
+  at_exit kill_server;
+  let name = client_name server.Irmin_test.name in
+  { Irmin_test.name;
 
     init = begin fun () ->
-      remove pid_file;
+      remove (pid_file i);
       Lwt_io.flush_all () >>= fun () ->
-      let _ = Sys.command @@ Fmt.strf "%s serve %d &" Sys.argv.(0) i in
-      wait_for_the_server_to_start () >|= fun pid ->
+      let _ = Sys.command @@ Fmt.strf "dune exec -- %s serve %d &" Sys.argv.(0) i in
+      wait_for_the_server_to_start name i >|= fun pid ->
       server_pid := pid
     end;
 
     stats = None;
     clean = begin fun () ->
-      try Unix.kill !server_pid Sys.sigkill;
-        let () =
-          try ignore (Unix.waitpid [Unix.WUNTRACED] !server_pid)
-          with _ -> () in
-        server.clean ()
-      with Unix.Unix_error (Unix.ESRCH, _, _) -> Lwt.return_unit
+      kill_server ();
+      let () =
+        try ignore (Unix.waitpid [Unix.WUNTRACED] !server_pid)
+        with _ -> ()
+      in
+      server.clean ()
     end;
 
-    config = Irmin_http.config uri;
+    config = Irmin_http.config (uri name i);
     store = http_store server.store;
   }
 
@@ -119,7 +145,7 @@ let suites servers =
 let with_server servers f =
   if Array.length Sys.argv = 3 && Sys.argv.(1) = "serve" then
     let n = int_of_string Sys.argv.(2) in
-    Logs.set_reporter (reporter ~prefix:"S" ());
+    Logs.set_reporter (Irmin_test.reporter ~prefix:"S" ());
     serve servers n
   else
     f ()

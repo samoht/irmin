@@ -16,7 +16,6 @@
  *)
 
 open Lwt.Infix
-open Irmin_test
 
 module Hash = Irmin.Hash.SHA1
 
@@ -55,7 +54,7 @@ end
 let init () =
   Lwt.return_unit
 
-let store = store
+let store = Irmin_test.store
   (module Irmin.Make(Irmin_chunk.AO(Irmin_mem.AO))(Irmin_mem.RW))
   (module Irmin.Metadata.None)
 
@@ -67,5 +66,5 @@ let clean () =
   S.Repo.branches repo >>= Lwt_list.iter_p (S.Branch.remove repo)
 
 let suite = {
-  name = "CHUNK"; init; store; config; clean; stats=None;
+  Irmin_test.name = "CHUNK"; init; store; config; clean; stats=None;
 }

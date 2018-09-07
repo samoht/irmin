@@ -16,12 +16,10 @@
 
 open Lwt.Infix
 
-module IO = struct
+let src = Logs.Src.create "irmin-unix" ~doc:"logs git's unix events"
+module Log = (val Logs.src_log src : Logs.LOG)
 
-  module Log = struct
-    let src = Logs.Src.create "git.unix" ~doc:"logs git's unix events"
-    include (val Logs.src_log src : Logs.LOG)
-  end
+module IO = struct
 
   let mkdir_pool = Lwt_pool.create 1 (fun () -> Lwt.return_unit)
 
