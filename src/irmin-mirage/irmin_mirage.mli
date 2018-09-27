@@ -18,11 +18,12 @@
 
 (** The context to use for synchronisation. *)
 
-module Info (N: sig val name: string end)(C: Mirage_clock.PCLOCK): sig
+module Info (C: Mirage_clock.PCLOCK): sig
 
   (** {1 Commit info creators} *)
 
-  val f: C.t -> ('a, Format.formatter, unit, Irmin.Info.f) format4 -> 'a
+  val f: C.t -> ?extra:(string * string) list -> author:string
+    -> ('a, Format.formatter, unit, Irmin.Info.f) format4 -> 'a
   (** Commit info function, using [N.name] and [C.now_d_ps] provided
       in the functor arguments. *)
 

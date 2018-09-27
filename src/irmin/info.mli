@@ -18,9 +18,10 @@
 
 type t
 val t: t Type.t
-val v: date:int64 -> author:string -> string -> t
+val v: date:int64 -> author:string -> ?extra:(string * string) list -> string -> t
 val date: t -> int64
 val author: t -> string
+val extra: t -> (string * string) list
 val message: t -> string
 val with_message: t -> string -> t
 

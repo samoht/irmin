@@ -14,14 +14,26 @@
  * OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
  *)
 
-let v ?author fmt =
+let read_line cmd =
+  let ic = Unix.open_process_in cmd in
+  let line = input_line ic in
+  close_in ic;
+  line
+
+let user = lazy
+  (try read_line "git config user.name"
+   with Unix.Unix_error _ -> Unix.gethostname())
+
+let email = lazy
+  (try read_line "git config user.email"
+   with Unix.Unix_error _ -> "irmin@mirage.io")
+
+let v ?extra ?author fmt =
   Fmt.kstrf (fun msg () ->
       let date = Int64.of_float (Unix.gettimeofday ()) in
       let author = match author with
         | Some a -> a
-        | None   ->
-          (* XXX: get "git config user.name" *)
-          Printf.sprintf "Irmin %s.[%d]" (Unix.gethostname()) (Unix.getpid())
+        | None   -> Fmt.strf "%s <%s>" (Lazy.force user) (Lazy.force email)
       in
-      Irmin.Info.v ~date ~author msg
+      Irmin.Info.v ~date ~author ?extra msg
     ) fmt

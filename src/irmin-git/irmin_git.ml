@@ -269,6 +269,9 @@ module Make_private
   module Node = Irmin.Private.Node.Store(Contents)(P)(Metadata)(XNode)
 
   module XCommit = struct
+
+    open Astring
+
     module Val = struct
       type t = G.Value.Commit.t
       let pp = G.Value.Commit.pp
@@ -279,41 +282,42 @@ module Make_private
       let commit_t = H.t
       let node_t = H.t
 
-      let info_of_git author message =
+      let info_of_git ?extra author message =
         let id = author.Git.User.name in
         let date, _ = author.Git.User.date in (* FIXME: tz offset is ignored *)
-        Irmin.Info.v ~date ~author:id message
+        Irmin.Info.v ~date ~author:id ?extra message
 
       let name_email name =
         let name = String.trim name in
-        try
-          let i = String.rindex name ' ' in
-          let email = String.sub name (i+1) (String.length name - i - 1) in
+        match String.cut ~rev:true ~sep:" " name with
+        | None               -> name, "irmin@mirage.io"
+        | Some (name, email) ->
           if String.length email > 0
              && email.[0] = '<'
              && email.[String.length email - 1] = '>'
           then
-            let email = String.sub email 1 (String.length email - 2) in
-            let name = String.trim (String.sub name 0 i) in
+            let email =
+              String.with_range email ~first:1 ~len:(String.length email - 2)
+            in
             name, email
           else
-            name, "irmin@openmirage.org"
-        with Not_found ->
-          name, "irmin@openmirage.org"
+            name, "irmin@mirage.io"
 
       let of_git g =
         let node = G.Value.Commit.tree g in
         let parents = G.Value.Commit.parents g in
         let author = G.Value.Commit.author g in
-        let message = G.Value.Commit.message g in
-        let message =
-          (* XXX(samoht): check that this is ok for GPG-signed message... *)
-          if String.length message > 0 && String.get message 0 = '\n' then
-            String.sub message 1 (String.length message - 1)
-          else
-            message
+        let extra = match G.Value.Commit.extra g with
+          | [] -> None
+          | e  -> Some (List.map (fun (k, v) -> k, String.concat ~sep:"\n" v) e)
         in
-        let info = info_of_git author message in
+        let message = match G.Value.Commit.message g with
+          | ""  -> ""
+          | msg ->
+            assert (String.get msg 0 = '\n');
+            String.with_range ~first:1 msg
+        in
+        let info = info_of_git ?extra author message in
         (info, node, parents)
 
       let to_git info node parents =
@@ -325,13 +329,16 @@ module Make_private
           Git.User.({ name; email;
                       date  = date, None;
                     }) in
-        let message = Irmin.Info.message info in
-        let message =
-          (* XXX(samoht): check that this is ok for GPG-signed message... *)
-          if message = "" then "" else  "\n" ^ message
+        let message = match Irmin.Info.message info with
+          | ""  -> ""
+          | msg -> "\n" ^ msg
+        in
+        let extra = match Irmin.Info.extra info with
+          | [] -> None
+          | e  -> Some (List.map (fun (k, v) -> k, String.cuts ~sep:"\n" v) e)
         in
         G.Value.Commit.make (* FIXME: should be v *)
-          ~tree ~parents ~author ~committer:author message
+          ~tree ~parents ~author ~committer:author ?extra message
 
       let v ~info ~node ~parents = to_git info node parents
       let xnode g = G.Value.Commit.tree g

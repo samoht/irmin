@@ -35,7 +35,7 @@
 
 *)
 
-val info: ?author:string ->
+val info: ?extra:(string * string) list -> ?author:string ->
   ('a, Format.formatter, unit, Irmin.Info.f) format4 -> 'a
 (** [info fmt ()] creates a fresh commit info, with the
     {{!Irmin.Info.date}date} set to [Unix.gettimeoday ()] and the

@@ -484,7 +484,7 @@ module Info: sig
   type t
   (** The type for commit info. *)
 
-  val v: date:int64 -> author:string -> string -> t
+  val v: date:int64 -> author:string -> ?extra:(string * string) list -> string -> t
   (** Create a new commit info. *)
 
   val date: t -> int64
@@ -504,6 +504,10 @@ module Info: sig
       The author identifies the entity (human, unikernel, process,
       thread, etc) performing an operation. For the Git backend, this
       will be directly translated into the {e Author} field. *)
+
+  val extra: t -> (string * string) list
+  (** [extra t] is the extra metadata stored in the commit message
+     (like PGP signatures). *)
 
   val message: t -> string
   (** [message t] is [t]'s commit message. *)

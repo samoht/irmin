@@ -16,12 +16,12 @@
 
 open Astring
 
-module Info (N: sig val name: string end) (C: Mirage_clock.PCLOCK) = struct
-  let f c fmt =
+module Info (C: Mirage_clock.PCLOCK) = struct
+  let f c ?extra ~author fmt =
     Fmt.kstrf (fun msg () ->
         C.now_d_ps c |>
         Ptime.v |> Ptime.to_float_s |> Int64.of_float |> fun date ->
-        Irmin.Info.v ~date ~author:N.name msg
+        Irmin.Info.v ~date ?extra ~author msg
       ) fmt
 end
 
