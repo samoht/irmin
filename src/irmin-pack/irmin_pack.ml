@@ -63,7 +63,6 @@ end
 
 module IO : IO = struct
   type fd = {
-    file : string;
     fd : Lwt_unix.file_descr;
     mutable cursor : int64;
     lock : Lwt_mutex.t
@@ -126,6 +125,8 @@ module IO : IO = struct
       | Ok t -> t
       | Error (`Msg e) -> Fmt.failwith "get_offset: %s" e
   end
+
+  let fd fd = { lock = Lwt_mutex.create (); fd; cursor = 0L }
 
   let unsafe_sync t =
     let buf = Buffer.contents t.buf in
@@ -192,8 +193,6 @@ module IO : IO = struct
     Buffer.clear t.buf;
     Lwt.return ()
 
-  let fd file fd = { file; lock = Lwt_mutex.create (); fd; cursor = 0L }
-
   let v file =
     let v ~offset ~fd =
       let buf = Buffer.create (1024 * 1024) in
@@ -203,11 +202,11 @@ module IO : IO = struct
     Lwt_unix.file_exists file >>= function
     | false ->
         Lwt_unix.openfile file Unix.[ O_CREAT; O_RDWR ] 0o644 >>= fun x ->
-        let fd = fd file x in
+        let fd = fd x in
         Raw.unsafe_set_offset fd 0L >|= fun () -> v ~offset:0L ~fd
     | true ->
         Lwt_unix.openfile file Unix.[ O_EXCL; O_RDWR ] 0o644 >>= fun x ->
-        let fd = fd file x in
+        let fd = fd x in
         Raw.unsafe_get_offset fd >|= fun offset -> v ~offset ~fd
 end
 
