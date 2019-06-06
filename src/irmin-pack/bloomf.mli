@@ -1,35 +1,44 @@
-(* inspired from
-   https://github.com/travisbrady/flajolet/blob/master/lib/bloom.ml
-   and
-   https://github.com/sergezloto/ocaml-bloom-filter/blob/master/bloomf.ml*)
+(******************************************************************************)
+(* The MIT License                                                            *)
+(*                                                                            *)
+(* Copyright (c) 2019 Clément Pascutto                                        *)
+(*                                                                            *)
+(* Permission is hereby granted, free of charge, to any person obtaining a    *)
+(* copy of this software and associated documentation files (the "Software"), *)
+(* to deal in the Software without restriction, including without limitation  *)
+(* the rights to use, copy, modify, merge, publish, distribute, sublicense,   *)
+(* and/or sell copies of the Software, and to permit persons to whom the      *)
+(* Software is  furnished to do so, subject to the following conditions:      *)
+(*                                                                            *)
+(* The above copyright notice and this permission notice shall be included in *)
+(* all copies or substantial portions of the Software.                        *)
+(*                                                                            *)
+(******************************************************************************)
 
-module type HASH = sig
-  type t
+(** Bloom filters
 
-  val hash : t -> int
-end
+    bloomf is an implementation of Bloom filters in OCaml.
 
-(** A Bloom filter provides for creation, membership and addition only *)
-module type S = sig
-  (** The type of elements. *)
-  type elt
+    Bloom filters are memory and time efficient data structures allowing
+    probabilistic membership queries in a set.
+    A query negative result ensures that the element is not present in the set,
+    while a positive result might be a false positive, i.e. the element might
+    not be present and the BF membership query can return true anyway.
+    Internal parameters of the BF allow to control its false positive rate
+    depending on the expected number of elements in it. *)
 
-  (** The type of the Bloom filter *)
-  type t
+(** The type of the Bloom filter *)
+type 'a t
 
-  val create : ?error_rate:float -> int -> t
-  (** Instantiates the filter *)
+val create : ?error_rate:float -> int -> 'a t
+(** [create ~error_rate size] creates a fresh BF for which expected false
+    positive rate when filled with [size] elements is [error_rate]. *)
 
-  val add : t -> elt -> unit
-  (** [add t e] adds [e] to [t]. *)
+val add : 'a t -> 'a -> unit
+(** [add t e] adds [e] to [t]. *)
 
-  val mem : t -> elt -> bool
-  (** [mem t e] is false if [e] is not part of the set (the reverse
-     property doesn't hold). *)
+val mem : 'a t -> 'a -> bool
+(** [mem t e] is [true] if [e] is in [t]. *)
 
-  val clear : t -> unit
-  (** Returns the set to an empty state *)
-end
-
-(** Bloom filter functor *)
-module Make (H : HASH) : S with type elt = H.t
+val clear : 'a t -> unit
+(** [clear t] clears the contents of [t] *)

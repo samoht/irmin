@@ -411,8 +411,6 @@ module Index (H : Irmin.Hash.S) = struct
     let equal x y = Irmin.Type.equal H.t x y
   end)
 
-  module BF = Bloomf.Make (H)
-
   let lru_size = 1000
 
   let page_size = 1000 * pad
@@ -423,7 +421,7 @@ module Index (H : Irmin.Hash.S) = struct
     offsets : (int64, entry) Hashtbl.t;
     log : IO.t;
     index : IO.t;
-    entries : BF.t;
+    entries : H.t Bloomf.t;
     root : string;
     lock : Lwt_mutex.t
   }
@@ -431,7 +429,7 @@ module Index (H : Irmin.Hash.S) = struct
   let unsafe_clear t =
     IO.clear t.log >>= fun () ->
     IO.clear t.index >|= fun () ->
-    BF.clear t.entries;
+    Bloomf.clear t.entries;
     Pool.clear t.pages;
     Tbl.clear t.cache;
     Hashtbl.clear t.offsets
@@ -468,7 +466,7 @@ module Index (H : Irmin.Hash.S) = struct
           log;
           index;
           lock = Lwt_mutex.create ();
-          entries = BF.create ~error_rate:0.1 500_000
+          entries = Bloomf.create ~error_rate:0.01 500_000
         }
       in
       Hashtbl.add files root t;
@@ -522,7 +520,7 @@ module Index (H : Irmin.Hash.S) = struct
 
   let unsafe_find t key =
     Log.debug (fun l -> l "[index] find %a" pp_hash key);
-    if not (BF.mem t.entries key) then Lwt.return None
+    if not (Bloomf.mem t.entries key) then Lwt.return None
     else
       match Tbl.find t.cache key with
       | e -> Lwt.return (Some e)
@@ -531,7 +529,7 @@ module Index (H : Irmin.Hash.S) = struct
   let find t key = Lwt_mutex.with_lock t.lock (fun () -> unsafe_find t key)
 
   let unsafe_mem t key =
-    if not (BF.mem t.entries key) then Lwt.return false
+    if not (Bloomf.mem t.entries key) then Lwt.return false
     else unsafe_find t key >|= function None -> false | Some _ -> true
 
   let mem t key = Lwt_mutex.with_lock t.lock (fun () -> unsafe_mem t key)
@@ -611,7 +609,7 @@ module Index (H : Irmin.Hash.S) = struct
     append_entry t.log entry >>= fun () ->
     Tbl.add t.cache key entry;
     Hashtbl.add t.offsets entry.offset entry;
-    BF.add t.entries key;
+    Bloomf.add t.entries key;
     if Int64.compare (IO.offset t.log) log_sizeL > 0 then merge t
     else Lwt.return_unit
 
