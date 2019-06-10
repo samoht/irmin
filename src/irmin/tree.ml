@@ -288,7 +288,7 @@ module Make (P : S.PRIVATE) = struct
   end
 
   module Node = struct
-    type value = P.Node.Val.t
+    type value = P.Node.Val.inode
 
     type elt = [ `Node of t | `Contents of Contents.t * Metadata.t ]
 
@@ -334,7 +334,7 @@ module Make (P : S.PRIVATE) = struct
         | Map m -> map m | Hash (_, y) -> hash y | Value (_, v) -> value v )
       |~ case1 "map" m (fun m -> Map m)
       |~ case1 "hash" P.Hash.t (fun _ -> assert false)
-      |~ case1 "value" P.Node.Val.t (fun _ -> assert false)
+      |~ case1 "value" P.Node.Val.inode_t (fun _ -> assert false)
       |> sealv
 
     let info_is_empty i = i.map = None && i.value = None
@@ -472,8 +472,9 @@ module Make (P : S.PRIVATE) = struct
 
     let of_value repo v = of_v (Value (repo, v))
 
-    let map_of_value repo (n : value) : map =
-      let entries = P.Node.Val.list n in
+    let map_of_value repo (n : value) : map Lwt.t =
+      let find = P.Node.find (P.Repo.node_t repo) in
+      P.Node.Val.list ~find n >|= fun entries ->
       let aux = function
         | `Node h -> `Node (of_hash repo h)
         | `Contents (c, m) -> `Contents (Contents.of_hash repo c, m)
@@ -516,6 +517,7 @@ module Make (P : S.PRIVATE) = struct
       | _ -> ()
 
     let hash_of_value t v =
+      let v, _ = P.Node.Val.of_inode v in
       let k = P.Node.Key.digest v in
       let () =
         match Cache.find cache k with
@@ -551,7 +553,7 @@ module Make (P : S.PRIVATE) = struct
               t.info.value <- Some v;
               hash_of_value t v ) )
 
-    and value_of_map map =
+    and value_of_map map : value =
       let alist =
         StepMap.fold
           (fun step v acc ->
@@ -572,9 +574,11 @@ module Make (P : S.PRIVATE) = struct
           ( match t.v with
           | Value (_, v) -> Lwt.return (Some v)
           | Map m -> Lwt.return (Some (value_of_map m))
-          | Hash (repo, k) ->
+          | Hash (repo, k) -> (
               Log.debug (fun l -> l "Tree.Node.to_value %a" pp_hash k);
-              P.Node.find (P.Repo.node_t repo) k )
+              P.Node.find (P.Repo.node_t repo) k >|= function
+              | None -> None
+              | Some n -> Some (P.Node.Val.to_inode n) ) )
           >|= fun value ->
           let value =
             match t.info.value with
@@ -591,19 +595,19 @@ module Make (P : S.PRIVATE) = struct
       | Some m -> Lwt.return (Some m)
       | None -> (
           let of_value repo v =
-            let m = map_of_value repo v in
+            map_of_value repo v >|= fun m ->
             t.info.map <- Some m;
             check __LOC__ t;
             Some m
           in
           match t.v with
           | Map m -> Lwt.return (Some m)
-          | Value (repo, v) -> Lwt.return (of_value repo v)
+          | Value (repo, v) -> of_value repo v
           | Hash (repo, k) -> (
               Log.debug (fun l -> l "Tree.Node.to_map %a" pp_hash k);
-              P.Node.find (P.Repo.node_t repo) k >|= function
-              | None -> None
-              | Some v -> of_value repo v ) )
+              P.Node.find (P.Repo.node_t repo) k >>= function
+              | None -> Lwt.return None
+              | Some v -> of_value repo (P.Node.Val.to_inode v) ) )
 
     let hash_equal x y = x == y || Type.equal P.Hash.t x y
 
@@ -1093,6 +1097,8 @@ module Make (P : S.PRIVATE) = struct
   let export ?clear repo contents_t node_t n =
     let seen = seen_of_repo repo in
     let add_node n v () =
+      let v, rest = P.Node.Val.of_inode v in
+      Lwt_list.map_s (P.Node.add node_t) rest >>= fun _ ->
       P.Node.add node_t v >|= fun k ->
       let k' = Node.to_hash n in
       assert (Type.equal P.Hash.t k k');

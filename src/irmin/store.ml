@@ -232,14 +232,17 @@ module Make (P : S.PRIVATE) = struct
         let contents = ref KSet.empty in
         Lwt_list.iter_p
           (fun k ->
-            P.Node.find (node_t t) k >>= function
+            let find = P.Node.find (node_t t) in
+            find k >>= function
             | None -> Lwt.return_unit
             | Some v ->
+                P.Node.Val.list ~find (P.Node.Val.to_inode v)
+                >>= fun entries ->
                 List.iter
                   (function
                     | _, `Contents (c, _) -> contents := KSet.add c !contents
                     | _ -> () )
-                  (P.Node.Val.list v);
+                  entries;
                 P.Slice.add slice (`Node (k, v)) )
           nodes
         >>= fun () ->

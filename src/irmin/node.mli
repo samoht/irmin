@@ -48,10 +48,15 @@ module Store
   with type 'a t = 'a C.t * 'a N.t
    and type key = N.key
    and type value = N.value
-   and module Path = P
-   and module Metadata = M
+   and type Path.t = P.t
+   and type Path.step = P.step
+   and type Metadata.t = M.t
    and type Key.t = N.key
-   and module Val = N.Val
+   and type Val.t = N.Val.t
+   and type Val.inode = N.Val.inode
+   and type Val.hash = N.Val.hash
+   and type Val.metadata = N.Val.metadata
+   and type Val.step = N.Val.step
 
 module Graph (N : S.NODE_STORE) :
   S.NODE_GRAPH
@@ -69,7 +74,7 @@ module V1 (N : S.NODE) : sig
      and type step = N.step
      and type metadata = N.metadata
 
-  val import : N.t -> t
+  val import : find:(hash -> t Lwt.t) -> N.t -> t Lwt.t
 
   val export : t -> N.t
 end

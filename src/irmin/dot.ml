@@ -63,6 +63,7 @@ module Make (S : S.STORE) = struct
           (match depth with None -> "<none>" | Some d -> string_of_int d)
           html
           (match full with None -> "<none>" | Some b -> string_of_bool b) );
+    let find = Node.find (S.Private.Repo.node_t (S.repo t)) in
     S.Repo.export ?full ?depth (S.repo t) >>= fun slice ->
     let vertex = Hashtbl.create 102 in
     let add_vertex v l = Hashtbl.add vertex v l in
@@ -171,8 +172,9 @@ module Make (S : S.STORE) = struct
         add_vertex (`Commit k)
           [ `Shape `Box; `Style `Bold; label_of_commit k r ] )
       !commits;
-    List.iter
+    Lwt_list.iter_s
       (fun (k, t) ->
+        Node.Val.list ~find (Node.Val.to_inode t) >|= fun children ->
         List.iter
           (fun (l, v) ->
             match v with
@@ -183,8 +185,9 @@ module Make (S : S.STORE) = struct
             | `Node n ->
                 add_edge (`Node k) [ `Style `Solid; label_of_step l ] (`Node n)
             )
-          (Node.Val.list t) )
-      !nodes;
+          children )
+      !nodes
+    >>= fun () ->
     List.iter
       (fun (k, r) ->
         List.iter

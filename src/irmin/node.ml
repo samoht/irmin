@@ -32,7 +32,7 @@ module No_metadata = struct
 end
 
 module Make
-    (K : Type.S) (P : sig
+    (K : S.HASH) (P : sig
         type step
 
         val step_t : step Type.t
@@ -87,30 +87,130 @@ struct
 
   type value = [ `Contents of hash * metadata | `Node of hash ]
 
-  type t = entry StepMap.t
+  type node = Entries of entry StepMap.t | Inodes of v array
 
-  let v l =
-    List.fold_left
-      (fun acc x -> StepMap.add (fst x) (to_entry x) acc)
-      StepMap.empty l
+  and v = { level : int; node : node }
 
-  let list t = List.map (fun (_, e) -> of_entry e) (StepMap.bindings t)
+  type t = {
+    level : int;
+    entries : (step * entry) list;
+    inodes : (int * hash) list
+  }
 
-  let find t s =
+  let t =
+    let open Type in
+    record "node" (fun level entries inodes -> { level; entries; inodes })
+    |+ field "level" int (fun t -> t.level)
+    |+ field "entries" (list (pair P.step_t entry_t)) (fun t -> t.entries)
+    |+ field "inodes" (list (pair int K.t)) (fun t -> t.inodes)
+    |> sealr
+
+  let of_v v =
+    let nodes = ref [] in
+    let rec aux k (v : v) =
+      match v.node with
+      | Entries m ->
+          k { level = v.level; entries = StepMap.bindings m; inodes = [] }
+      | Inodes n ->
+          let _, entries, inodes =
+            Array.fold_left
+              (fun (i, entries, inodes) n ->
+                match n.node with
+                | Entries m when StepMap.is_empty m -> (i + 1, entries, inodes)
+                | Entries m when StepMap.cardinal m = 1 ->
+                    let s, e = StepMap.choose m in
+                    (i + 1, (s, e) :: entries, inodes)
+                | _ ->
+                    let n = aux k n in
+                    let k = K.digest (Type.pre_digest t n) in
+                    nodes := n :: !nodes;
+                    (i + 1, entries, (i, k) :: inodes) )
+              (0, [], []) n
+          in
+          k { level = v.level; entries; inodes }
+    in
+    let n = aux (fun x -> x) v in
+    (n, !nodes)
+
+  let max_entries = 64
+
+  let max_inodes = 64
+
+  let to_v t =
+    assert (StepMap.cardinal t <= max_entries);
+    Entries t
+
+  let index ~level k = abs (Type.hash P.step_t ~seed:level k) mod max_inodes
+
+  let v (l : (step * value) list) : v =
+    let rec aux (k : v -> unit) level entries =
+      if StepMap.cardinal entries <= max_entries then
+        k { level; node = Entries entries }
+      else
+        let inodes =
+          Array.make max_inodes { level; node = Entries StepMap.empty }
+        in
+        StepMap.iter
+          (fun k v ->
+            let i = index ~level k in
+            match inodes.(i) with
+            | { node = Entries m; _ } ->
+                inodes.(i) <- { level; node = Entries (StepMap.add k v m) }
+            | _ -> assert false )
+          entries;
+        Array.iteri
+          (fun i -> function
+            | { node = Entries m; _ } ->
+                if StepMap.cardinal m <= max_entries then ()
+                else aux (fun n -> inodes.(i) <- n) (level + 1) m
+            | _ -> assert false )
+          inodes;
+        k { level; node = Inodes inodes }
+    in
+    let entries =
+      List.fold_left
+        (fun acc (k, v) -> StepMap.add k (to_entry (k, v)) acc)
+        StepMap.empty l
+    in
+    let r = ref None in
+    aux (fun k -> r := Some k) 0 entries;
+    match !r with Some r -> r | None -> assert false
+
+  let list_entries t = List.map (fun (_, e) -> of_entry e) (StepMap.bindings t)
+
+  let list t =
+    let rec aux acc t =
+      match t.node with
+      | Entries t -> StepMap.union (fun _ _ -> assert false) acc t
+      | Inodes n -> Array.fold_left aux acc n
+    in
+    list_entries (aux StepMap.empty t)
+
+  let find_entries t s =
     try
       let _, v = of_entry (StepMap.find s t) in
       Some v
     with Not_found -> None
 
-  let empty = StepMap.empty
+  let find t s =
+    let rec aux t =
+      match t.node with
+      | Entries t -> find_entries t s
+      | Inodes n -> aux n.(index ~level:t.level s)
+    in
+    aux t
 
-  let is_empty e = list e = []
+  let empty = { level = 0; node = Entries StepMap.empty }
 
-  let update t k v =
-    let e = to_entry (k, v) in
-    StepMap.add k e t
+  let is_empty t = list t = []
 
-  let remove t k = StepMap.remove k t
+  let update t k x =
+    (* FIXME(samoht): not optimized at all *)
+    v ((k, x) :: list t)
+
+  let remove t k =
+    (* FIXME(samoht): not optimized at all *)
+    v (List.remove_assoc k (list t))
 
   let step_t = P.step_t
 
@@ -128,11 +228,12 @@ struct
     |~ case1 "contents" (pair K.t M.t) (fun (h, m) -> `Contents (h, m))
     |> sealv
 
-  let of_entries e = v (List.map of_entry e)
-
-  let entries e = List.map to_entry (list e)
-
-  let t = Type.map Type.(list entry_t) of_entries entries
+  let entries =
+    let of_entries e =
+      List.fold_left (fun acc e -> StepMap.add e.name e acc) StepMap.empty e
+    in
+    let to_entries e = List.map to_entry (list_entries e) in
+    Type.map Type.(list entry_t) of_entries to_entries
 end
 
 module Store
@@ -168,14 +269,14 @@ struct
 
   let add (_, t) = S.add t
 
-  let all_contents t =
-    let kvs = S.Val.list t in
+  let all_contents ~find t =
+    S.Val.list ~find (S.Val.to_inode t) >|= fun kvs ->
     List.fold_left
       (fun acc -> function k, `Contents c -> (k, c) :: acc | _ -> acc)
       [] kvs
 
-  let all_succ t =
-    let kvs = S.Val.list t in
+  let all_succ ~find t =
+    S.Val.list ~find (S.Val.to_inode t) >|= fun kvs ->
     List.fold_left
       (fun acc -> function k, `Node n -> (k, n) :: acc | _ -> acc)
       [] kvs
@@ -209,28 +310,35 @@ struct
   let merge_parents merge_key =
     Merge.alist step_t S.Key.t (fun _step -> merge_key)
 
-  let merge_value (c, _) merge_key =
-    let explode t = (all_contents t, all_succ t) in
+  let merge_value ((c, n) as t) merge_key =
+    let find = S.find n in
+    let explode t =
+      all_contents ~find t >>= fun c -> all_succ ~find t >|= fun s -> (c, s)
+    in
     let implode (contents, succ) =
       let xs = List.map (fun (s, c) -> (s, `Contents c)) contents in
       let ys = List.map (fun (s, n) -> (s, `Node n)) succ in
-      S.Val.v (xs @ ys)
+      let n, rest = S.Val.(of_inode @@ v (xs @ ys)) in
+      Lwt_list.map_p (add t) rest >|= fun _ ->
+      (* FIXME(samoht): shouldn't [n] be added too ? *)
+      n
     in
     let merge = Merge.pair (merge_contents_meta c) (merge_parents merge_key) in
-    Merge.like S.Val.t merge explode implode
+    Merge.like_lwt S.Val.t merge explode implode
 
   let rec merge t =
     let merge_key =
       Merge.v (Type.option S.Key.t) (fun ~old x y ->
           Merge.(f (merge t)) ~old x y )
     in
+    let empty = S.Val.empty in
     let merge = merge_value t merge_key in
     let read = function
-      | None -> Lwt.return S.Val.empty
-      | Some k -> ( find t k >|= function None -> S.Val.empty | Some v -> v )
+      | None -> Lwt.return empty
+      | Some k -> ( find t k >|= function None -> empty | Some v -> v )
     in
     let add v =
-      if S.Val.is_empty v then Lwt.return_none
+      if S.Val.is_empty (S.Val.to_inode v) then Lwt.return_none
       else add t v >>= fun k -> Lwt.return (Some k)
     in
     Merge.like_lwt Type.(option S.Key.t) merge read add
@@ -261,7 +369,10 @@ module Graph (S : S.NODE_STORE) = struct
 
   let list t n =
     Log.debug (fun f -> f "steps");
-    S.find t n >|= function None -> [] | Some n -> S.Val.list n
+    let find = S.find t in
+    find n >>= function
+    | None -> Lwt.return []
+    | Some n -> S.Val.list ~find (S.Val.to_inode n)
 
   module U = struct
     type t = unit
@@ -271,10 +382,13 @@ module Graph (S : S.NODE_STORE) = struct
 
   module Graph = Object_graph.Make (Contents) (Metadata) (S.Key) (U) (U)
 
-  let edges t =
-    List.map
-      (function _, `Node n -> `Node n | _, `Contents c -> `Contents c)
-      (S.Val.list t)
+  let edges db t =
+    let find = S.find db in
+    S.Val.list ~find (S.Val.to_inode t) >|= fun children ->
+    List.fold_left
+      (fun acc -> function _, `Node n -> `Node n :: acc
+        | _, `Contents c -> `Contents c :: acc )
+      [] children
 
   let pp_key = Type.pp S.Key.t
 
@@ -285,8 +399,9 @@ module Graph (S : S.NODE_STORE) = struct
   let closure t ~min ~max =
     Log.debug (fun f -> f "closure min=%a max=%a" pp_keys min pp_keys max);
     let pred = function
-      | `Node k -> ( S.find t k >|= function None -> [] | Some v -> edges v )
-      | _ -> Lwt.return_nil
+      | `Node k -> (
+          S.find t k >>= function None -> Lwt.return [] | Some v -> edges t v )
+      | _ -> Lwt.return []
     in
     let min = List.map (fun x -> `Node x) min in
     let max = List.map (fun x -> `Node x) max in
@@ -298,11 +413,16 @@ module Graph (S : S.NODE_STORE) = struct
     in
     Lwt.return keys
 
-  let v t xs = S.add t (S.Val.v xs)
+  let v t xs =
+    let n, rest = S.Val.(of_inode @@ v xs) in
+    Lwt_list.map_p (S.add t) rest >>= fun _ -> S.add t n
 
   let find_step t node step =
     Log.debug (fun f -> f "contents %a" pp_key node);
-    S.find t node >|= function None -> None | Some n -> S.Val.find n step
+    let find = S.find t in
+    find node >>= function
+    | None -> Lwt.return None
+    | Some n -> S.Val.find ~find (S.Val.to_inode n) step
 
   let find t node path =
     Log.debug (fun f -> f "read_node_exn %a %a" pp_key node pp_path path);
@@ -320,37 +440,46 @@ module Graph (S : S.NODE_STORE) = struct
 
   let map_one t node f label =
     Log.debug (fun f -> f "map_one %a" Type.(pp Path.step_t) label);
-    let old_key = S.Val.find node label in
+    let find = S.find t in
+    S.Val.find ~find node label >>= fun old_key ->
     ( match old_key with
     | None | Some (`Contents _) -> Lwt.return S.Val.empty
     | Some (`Node k) -> (
         S.find t k >|= function None -> S.Val.empty | Some v -> v ) )
     >>= fun old_node ->
+    let old_node = S.Val.to_inode old_node in
     f old_node >>= fun new_node ->
-    if Type.equal S.Val.t old_node new_node then Lwt.return node
+    if old_node == new_node then Lwt.return node
     else if S.Val.is_empty new_node then
-      let node = S.Val.remove node label in
-      if S.Val.is_empty node then Lwt.return S.Val.empty else Lwt.return node
+      S.Val.remove ~find node label >|= fun node ->
+      if S.Val.is_empty node then S.Val.(to_inode empty) else node
     else
-      S.add t new_node >>= fun k ->
-      let node = S.Val.update node label (`Node k) in
-      Lwt.return node
+      let root, rest = S.Val.of_inode new_node in
+      Lwt_list.map_p (S.add t) rest >>= fun _ ->
+      S.add t root >>= fun k -> S.Val.update ~find node label (`Node k)
 
   let map t node path f =
     Log.debug (fun f -> f "map %a %a" pp_key node pp_path path);
     let rec aux node path =
       match Path.decons path with
-      | None -> Lwt.return (f node)
+      | None -> f node
       | Some (h, tl) -> map_one t node (fun node -> aux node tl) h
     in
     (S.find t node >|= function None -> S.Val.empty | Some n -> n)
-    >>= fun node -> aux node path >>= S.add t
+    >>= fun node ->
+    let old_node = S.Val.to_inode node in
+    aux old_node path >>= fun new_node ->
+    if old_node == new_node then Lwt.return (S.Key.digest node)
+    else
+      let root, rest = S.Val.of_inode new_node in
+      Lwt_list.map_p (S.add t) rest >>= fun _ -> S.add t root
 
   let update t node path n =
     Log.debug (fun f -> f "update %a %a" pp_key node pp_path path);
+    let find = S.find t in
     match Path.rdecons path with
     | Some (path, file) ->
-        map t node path (fun node -> S.Val.update node file n)
+        map t node path (fun node -> S.Val.update ~find node file n)
     | None -> (
       match n with
       | `Node n -> Lwt.return n
@@ -362,8 +491,9 @@ module Graph (S : S.NODE_STORE) = struct
     | None -> err_empty_path ()
 
   let remove t node path =
+    let find = S.find t in
     let path, file = rdecons_exn path in
-    map t node path (fun node -> S.Val.remove node file)
+    map t node path (fun node -> S.Val.remove ~find node file)
 
   let path_t = Path.t
 
@@ -417,33 +547,50 @@ module V1 (N : S.NODE) = struct
 
   let metadata_t = N.metadata_t
 
-  type t = { n : N.t; entries : (step * value) list }
+  type 'a with_entries = { v : 'a; entries : (step * value) list }
 
-  let import n = { n; entries = N.list n }
+  type inode = N.inode with_entries
 
-  let export t = t.n
+  type t = N.t with_entries
 
-  let v entries =
-    let n = N.v entries in
-    { n; entries }
+  let of_tree v =
+    let x, y = N.of_inode v.v in
+    ({ v = x; entries = v.entries }, List.map (fun v -> { v; entries = [] }) y)
 
-  let list t = t.entries
+  let to_tree t =
+    let v = N.to_inode t.v in
+    { v; entries = t.entries }
 
-  let empty = { n = N.empty; entries = [] }
+  let inode t = t
+
+  let internals t = (t, [])
+
+  let import ~find v =
+    N.list ~find (N.to_inode v) >|= fun entries -> { v; entries }
+
+  let export t = t.v
+
+  let tree entries =
+    let v = N.v entries in
+    { v; entries }
+
+  let list ~find:_ t = t.entries
 
   let is_empty t = t.entries = []
 
   let default = N.default
 
-  let find t k = N.find t.n k
+  let find ~find t k = N.find ~find t.v k
 
-  let update t k v =
-    let n = N.update t.n k v in
-    if t.n == n then t else { n; entries = N.list n }
+  let update ~find t k v =
+    N.update t.v ~find k v >>= fun v ->
+    if t.v == v then Lwt.return t
+    else N.list ~find v >|= fun entries -> { v; entries }
 
-  let remove t k =
-    let n = N.remove t.n k in
-    if t.n == n then t else { n; entries = N.list n }
+  let remove t ~find k =
+    N.remove t.v ~find k >>= fun v ->
+    if t.v == v then Lwt.return t
+    else N.list ~find v >|= fun entries -> { v; entries }
 
   let step_t : step Type.t =
     let to_string p = Type.to_bin_string N.step_t p in
@@ -472,5 +619,10 @@ module V1 (N : S.NODE) = struct
     |> sealr
 
   let t : t Type.t =
-    Type.map Type.(list ~len:`Int64 (pair step_t value_t)) v list
+    Type.map
+      Type.(list ~len:`Int64 (pair step_t value_t))
+      (fun entries ->
+        (* FIXME(samoht): is [fst] ok? *)
+        fst (of_tree (tree entries)) )
+      (fun (t : t) -> t.entries)
 end

@@ -204,6 +204,12 @@ struct
 
       type t = G.Value.Tree.t
 
+      type inode = t
+
+      let inode t = t
+
+      let internals t = (t, [])
+
       type metadata = Metadata.t
 
       type hash = Key.t
@@ -310,9 +316,11 @@ struct
 
       module N = Irmin.Private.Node.Make (H) (P) (Metadata)
 
-      let to_n t = N.v (alist t)
+      let to_n t =
+        let r, _ = N.internals (N.v (alist t)) in
+        r
 
-      let of_n n = v (N.list n)
+      let of_n n = v (N.list (N.inode n))
 
       let to_bin t =
         let raw, etmp = (Cstruct.create 0x100, Cstruct.create 0x100) in

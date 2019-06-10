@@ -110,6 +110,8 @@ end
 module type NODE = sig
   type t
 
+  type inode
+
   type metadata
 
   type hash
@@ -118,21 +120,30 @@ module type NODE = sig
 
   type value = [ `Node of hash | `Contents of hash * metadata ]
 
-  val v : (step * value) list -> t
-
-  val list : t -> (step * value) list
-
   val empty : t
 
-  val is_empty : t -> bool
+  val v : (step * value) list -> inode
 
-  val find : t -> step -> value option
+  val is_empty : inode -> bool
 
-  val update : t -> step -> value -> t
+  val list :
+    find:(hash -> t option Lwt.t) -> inode -> (step * value) list Lwt.t
 
-  val remove : t -> step -> t
+  val find :
+    find:(hash -> t option Lwt.t) -> inode -> step -> value option Lwt.t
+
+  val update :
+    find:(hash -> t option Lwt.t) -> inode -> step -> value -> inode Lwt.t
+
+  val remove : find:(hash -> t option Lwt.t) -> inode -> step -> inode Lwt.t
+
+  val of_inode : inode -> t * t list
+
+  val to_inode : t -> inode
 
   val t : t Type.t
+
+  val inode_t : inode Type.t
 
   val default : metadata
 

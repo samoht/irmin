@@ -318,7 +318,7 @@ module Type : sig
   val compare : 'a t -> 'a -> 'a -> int
   (** [compare t] compares values of type [t]. *)
 
-  val hash : 'a t -> 'a -> int
+  val hash : 'a t -> ?seed:int -> 'a -> int
   (** [hash t x] is a short hash of [x] of type [t]. *)
 
   (** The type for pretty-printers for CLI arguments. *)
@@ -480,7 +480,7 @@ module Type : sig
     bin:'a encode_bin * 'a decode_bin * 'a size_of ->
     equal:('a -> 'a -> bool) ->
     compare:('a -> 'a -> int) ->
-    hash:('a -> int) ->
+    hash:(?seed:int -> 'a -> int) ->
     pre_digest:('a -> string) ->
     'a t
 
@@ -1505,6 +1505,9 @@ module Private : sig
       (** The type for node values. *)
       type t
 
+      (** The type for inodes *)
+      type inode
+
       (** The type for node metadata. *)
       type metadata
 
@@ -1518,32 +1521,46 @@ module Private : sig
           their metadata. *)
       type value = [ `Node of hash | `Contents of hash * metadata ]
 
-      val v : (step * value) list -> t
-      (** [create l] is a new node. *)
-
-      val list : t -> (step * value) list
-      (** [list t] is the contents of [t]. *)
-
       val empty : t
       (** [empty] is the empty node. *)
 
-      val is_empty : t -> bool
+      val v : (step * value) list -> inode
+      (** [create l] is a new node. *)
+
+      val is_empty : inode -> bool
       (** [is_empty t] is true iff [t] is {!empty}. *)
 
-      val find : t -> step -> value option
+      val list :
+        find:(hash -> t option Lwt.t) -> inode -> (step * value) list Lwt.t
+      (** [list t] is the contents of [t]. *)
+
+      val find :
+        find:(hash -> t option Lwt.t) -> inode -> step -> value option Lwt.t
       (** [find t s] is the value associated with [s] in [t].
 
           A node can point to user-defined
           {{!Node.S.contents}contents}. The edge between the node and
           the contents is labeled by a {{!Node.S.step}step}. *)
 
-      val update : t -> step -> value -> t
+      val update :
+        find:(hash -> t option Lwt.t) -> inode -> step -> value -> inode Lwt.t
       (** [update t s v] is the node where [find t v] is [Some s] but
           is similar to [t] otherwise. *)
 
-      val remove : t -> step -> t
+      val remove :
+        find:(hash -> t option Lwt.t) -> inode -> step -> inode Lwt.t
       (** [remove t s] is the node where [find t s] is [None] but is
           similar to [t] otherwise. *)
+
+      (** {1 Conversion with inodes} *)
+
+      val of_inode : inode -> t * t list
+
+      (** [of_inode i] exposes an inode as a list of nodes, ready to
+          be serialized. The first element is always the root node. *)
+
+      val to_inode : t -> inode
+      (** [inode t] is [t] seen as an inode. *)
 
       (** {1 Value types} *)
 
