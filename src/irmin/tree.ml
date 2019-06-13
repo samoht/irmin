@@ -312,12 +312,12 @@ module Make (P : S.PRIVATE) = struct
           if x != y then Fmt.failwith "%s: Value" msg
       | (Hash _ | Map _ | Value _), _, _, _ -> ()
 
-    let v t =
+    let elt t =
       let open Type in
-      variant "Node.value" (fun node contents -> function
+      variant "Node.elt" (fun node contents -> function
         | `Node x -> node x | `Contents x -> contents x )
-      |~ case1 "Node" t (fun x -> `Node x)
-      |~ case1 "Contents" (pair Contents.t Metadata.t) (fun x -> `Contents x)
+      |~ case1 "node" t (fun x -> `Node x)
+      |~ case1 "contents" (pair Contents.t Metadata.t) (fun x -> `Contents x)
       |> sealv
 
     let map value =
@@ -457,12 +457,12 @@ module Make (P : S.PRIVATE) = struct
 
     let _, t =
       Type.mu2 (fun _ y ->
-          let value = v y in
-          let node = node (map value) in
+          let elt = elt y in
+          let node = node (map elt) in
           let t = t node in
           (node, t) )
 
-    let v = v t
+    let v = elt t
 
     let dump = Type.pp_json ~minify:false t
 
