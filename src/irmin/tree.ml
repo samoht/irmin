@@ -288,6 +288,8 @@ module Make (P : S.PRIVATE) = struct
   end
 
   module Node = struct
+    module N = Node.Helpers (P.Node)
+
     type value = P.Node.Val.inode
 
     type elt = [ `Node of t | `Contents of Contents.t * Metadata.t ]
@@ -473,8 +475,7 @@ module Make (P : S.PRIVATE) = struct
     let of_value repo v = of_v (Value (repo, v))
 
     let map_of_value repo (n : value) : map Lwt.t =
-      let find = P.Node.find (P.Repo.node_t repo) in
-      P.Node.Val.list ~find n >|= fun entries ->
+      N.list (P.Repo.node_t repo) n >|= fun entries ->
       let aux = function
         | `Node h -> `Node (of_hash repo h)
         | `Contents (c, m) -> `Contents (Contents.of_hash repo c, m)
@@ -785,9 +786,9 @@ module Make (P : S.PRIVATE) = struct
 
   type tree = [ `Node of node | `Contents of contents * metadata ]
 
-  let of_private_node = Node.of_value
+  let of_private_node repo n = Node.of_value repo (P.Node.Val.to_inode n)
 
-  let to_private_node = Node.to_value
+  let to_private_node repo n = Node.to_value
 
   let node_t = Node.t
 

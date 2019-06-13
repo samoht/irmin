@@ -1567,6 +1567,9 @@ module Private : sig
       val t : t Type.t
       (** [t] is the value type for {!t}. *)
 
+      val inode_t : t Type.t
+      (** [inode_t] is the value type for {!inode}. *)
+
       val default : metadata
       (** [default] is the default metadata value. *)
 
@@ -1586,7 +1589,7 @@ module Private : sig
     (** [Make] provides a simple node implementation, parameterized by
         the contents and notes keys [K], paths [P] and metadata [M]. *)
     module Make
-        (K : Type.S) (P : sig
+        (K : Hash.S) (P : sig
             type step
 
             val step_t : step Type.t

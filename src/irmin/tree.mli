@@ -47,5 +47,5 @@ module Make (P : S.PRIVATE) : sig
 
   val of_private_node : P.Repo.t -> P.Node.value -> node
 
-  val to_private_node : node -> P.Node.value option Lwt.t
+  val to_private_node : node -> P.Node.Val.inode option Lwt.t
 end

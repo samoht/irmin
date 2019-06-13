@@ -150,6 +150,7 @@ module Make (P : S.PRIVATE) = struct
     Object_graph.Make (P.Contents.Key) (P.Node.Metadata) (P.Node.Key)
       (P.Commit.Key)
       (Branch_store.Key)
+  module Node = Node.Helpers (P.Node)
 
   type slice = P.Slice.t
 
@@ -232,15 +233,13 @@ module Make (P : S.PRIVATE) = struct
         let contents = ref KSet.empty in
         Lwt_list.iter_p
           (fun k ->
-            let find = P.Node.find (node_t t) in
-            find k >>= function
+            P.Node.find (node_t t) k >>= function
             | None -> Lwt.return_unit
             | Some v ->
-                P.Node.Val.list ~find (P.Node.Val.to_inode v)
-                >>= fun entries ->
+                Node.list (node_t t) v >>= fun entries ->
                 List.iter
                   (function
-                    | _, `Contents (c, _) -> contents := KSet.add c !contents
+                    | `Contents (_, c, _) -> contents := KSet.add c !contents
                     | _ -> () )
                   entries;
                 P.Slice.add slice (`Node (k, v)) )

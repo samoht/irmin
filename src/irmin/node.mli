@@ -21,7 +21,7 @@
 module No_metadata : S.METADATA with type t = unit
 
 module Make
-    (K : Type.S) (P : sig
+    (K : S.HASH) (P : sig
         type step
 
         val step_t : step Type.t
@@ -74,7 +74,19 @@ module V1 (N : S.NODE) : sig
      and type step = N.step
      and type metadata = N.metadata
 
-  val import : find:(hash -> t Lwt.t) -> N.t -> t Lwt.t
+  val import : find:(hash -> t option Lwt.t) -> N.t -> t Lwt.t
 
   val export : t -> N.t
+end
+
+module Helpers (S : S.NODE_STORE) : sig
+  open S
+
+  val find : [> `Read ] t -> value -> Val.step -> value option Lwt.t
+
+  val list : [> `Read ] t -> value -> Val.value list Lwt.t
+
+  val update : [> `Read ] t -> value -> Val.step -> value -> value Lwt.t
+
+  val remove : [> `Read ] t -> value -> Val.step -> value Lwt.t
 end

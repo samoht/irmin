@@ -118,22 +118,24 @@ module type NODE = sig
 
   type step
 
-  type value = [ `Node of hash | `Contents of hash * metadata ]
+  type substep
+
+  type value =
+    [ `Node of step * hash
+    | `Contents of step * hash * metadata
+    | `Inode of substep * hash ]
 
   val empty : t
 
-  val v : (step * value) list -> inode
+  val v : value list -> inode
 
   val is_empty : inode -> bool
 
-  val list :
-    find:(hash -> t option Lwt.t) -> inode -> (step * value) list Lwt.t
+  val find : inode -> step -> value option
 
-  val find :
-    find:(hash -> t option Lwt.t) -> inode -> step -> value option Lwt.t
+  val list : inode -> value list
 
-  val update :
-    find:(hash -> t option Lwt.t) -> inode -> step -> value -> inode Lwt.t
+  val update : find:(hash -> t option Lwt.t) -> inode -> value -> inode Lwt.t
 
   val remove : find:(hash -> t option Lwt.t) -> inode -> step -> inode Lwt.t
 
@@ -152,6 +154,8 @@ module type NODE = sig
   val hash_t : hash Type.t
 
   val step_t : step Type.t
+
+  val substep_t : substep Type.t
 
   val value_t : value Type.t
 end

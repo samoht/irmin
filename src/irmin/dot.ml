@@ -50,6 +50,7 @@ module Make (S : S.STORE) = struct
 
   module Branch = S.Private.Branch
   module Contents = S.Private.Contents
+  module Node_helpers = Node.Helpers (S.Private.Node)
   module Node = S.Private.Node
   module Commit = S.Private.Commit
   module Slice = S.Private.Slice
@@ -63,7 +64,7 @@ module Make (S : S.STORE) = struct
           (match depth with None -> "<none>" | Some d -> string_of_int d)
           html
           (match full with None -> "<none>" | Some b -> string_of_bool b) );
-    let find = Node.find (S.Private.Repo.node_t (S.repo t)) in
+    let node_t = S.Private.Repo.node_t (S.repo t) in
     S.Repo.export ?full ?depth (S.repo t) >>= fun slice ->
     let vertex = Hashtbl.create 102 in
     let add_vertex v l = Hashtbl.add vertex v l in
@@ -94,6 +95,14 @@ module Make (S : S.STORE) = struct
     in
     let label_of_step l =
       let l = Type.to_string S.Key.step_t l in
+      let s =
+        (if html then sprintf "<div class='path'>%s</div>" else fun x -> x)
+          (string_of_contents l)
+      in
+      `Label s
+    in
+    let label_of_substep l =
+      let l = Type.to_string Node.Val.substep_t l in
       let s =
         (if html then sprintf "<div class='path'>%s</div>" else fun x -> x)
           (string_of_contents l)
@@ -174,17 +183,20 @@ module Make (S : S.STORE) = struct
       !commits;
     Lwt_list.iter_s
       (fun (k, t) ->
-        Node.Val.list ~find (Node.Val.to_inode t) >|= fun children ->
+        Node_helpers.list node_t t >|= fun children ->
         List.iter
-          (fun (l, v) ->
+          (fun (v : S.Private.Node.Val.value) ->
             match v with
-            | `Contents (v, _meta) ->
+            | `Contents (l, v, _meta) ->
                 add_edge (`Node k)
                   [ `Style `Dotted; label_of_step l ]
                   (`Contents v)
-            | `Node n ->
+            | `Node (l, n) ->
                 add_edge (`Node k) [ `Style `Solid; label_of_step l ] (`Node n)
-            )
+            | `Inode (l, n) ->
+                add_edge (`Node k)
+                  [ `Style `Dashed; label_of_substep l ]
+                  (`Node n) )
           children )
       !nodes
     >>= fun () ->
