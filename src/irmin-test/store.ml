@@ -1150,7 +1150,7 @@ module Make (S : S) = struct
       (* Test caching (makesure that no tree is lying in scope) *)
       ( S.Tree.Cache.trim ();
         Gc.full_major ();
-        let v0 = S.Tree.shallow repo (P.Contents.Key.digest "foo") in
+        let v0 = S.Tree.shallow repo (P.Contents.Key.digest "foo-x") in
         check_cache "empty" 0 0;
         let foo = "foo-x" in
         S.Tree.add v0 [ "foo" ] foo >>= fun v0 ->
