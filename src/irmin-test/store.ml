@@ -1150,7 +1150,7 @@ module Make (S : S) = struct
       (* Test caching (makesure that no tree is lying in scope) *)
       ( S.Tree.Cache.trim ();
         Gc.full_major ();
-        let v0 = S.Tree.shallow repo (P.Contents.Key.digest "foo") in
+        let v0 = S.Tree.shallow (P.Contents.Key.digest "foo") in
         check_cache "empty" 0 0;
         let foo = "foo-x" in
         S.Tree.add v0 [ "foo" ] foo >>= fun v0 ->
@@ -1171,7 +1171,7 @@ module Make (S : S) = struct
           ()
         in
         S.Tree.Cache.trim ();
-        let v0 = S.Tree.shallow repo (P.Contents.Key.digest "bar") in
+        let v0 = S.Tree.shallow (P.Contents.Key.digest "bar") in
         let xxx = "xxx" in
         let yyy = "yyy" in
         let zzz = "zzz" in
@@ -1759,8 +1759,8 @@ module Make (S : S) = struct
     let test repo =
       let foo_k = S.Private.Contents.Key.digest "foo" in
       let bar_k = S.Private.Contents.Key.digest "bar" in
-      let tree_1 = S.Tree.shallow repo foo_k in
-      let tree_2 = S.Tree.shallow repo bar_k in
+      let tree_1 = S.Tree.shallow foo_k in
+      let tree_2 = S.Tree.shallow bar_k in
       let node_3 =
         S.Private.Node.Val.v
           [ ("foo", `Contents (foo_k, S.Metadata.default));

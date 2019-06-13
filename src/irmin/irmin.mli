@@ -2591,9 +2591,12 @@ module type S = sig
     (** [of_hash r h] is the the tree object in [r] having [h] as
         hash, or [None] is no such tree object exists. *)
 
-    val shallow : repo -> hash -> tree
-    (** [shallow r h] is the shallow tree object with the hash [h]. No
-        check is performed to verify if [h] actually exists in [r]. *)
+    val shallow : hash -> tree
+    (** [shallow h] is the shallow tree object with the hash [h]. No
+        check is performed to verify if [h] actually exists and most of
+        the operation on that tree will return an empty result.
+
+        The only invariant is [hash (shallow h) = h].*)
   end
 
   (** {1 Reads} *)

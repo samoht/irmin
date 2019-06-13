@@ -57,7 +57,7 @@ module Make (P : S.PRIVATE) = struct
     let of_hash r h =
       import r h >|= function Some t -> Some (`Node t) | None -> None
 
-    let shallow r h = `Node (import_no_check r h)
+    let shallow h = `Node (shallow h)
 
     let hash : tree -> hash =
      fun tr -> match hash tr with `Node h -> h | `Contents (h, _) -> h

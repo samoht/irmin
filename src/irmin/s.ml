@@ -699,7 +699,7 @@ module type STORE = sig
 
     val of_hash : Repo.t -> hash -> tree option Lwt.t
 
-    val shallow : Repo.t -> hash -> tree
+    val shallow : hash -> tree
   end
 
   val kind : t -> key -> [ `Contents | `Node ] option Lwt.t

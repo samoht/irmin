@@ -111,7 +111,7 @@ module Make (P : S.PRIVATE) = struct
   end)
 
   module Contents = struct
-    type v = Hash of repo * hash | Value of contents
+    type v = Hash of repo * hash | Value of contents | Shallow of hash
 
     type info = { mutable hash : hash option; mutable value : contents option }
 
@@ -119,9 +119,11 @@ module Make (P : S.PRIVATE) = struct
 
     let v =
       let open Type in
-      variant "Node.Contents.v" (fun hash value -> function
-        | Hash (_, x) -> hash x | Value v -> value v )
-      |~ case1 "hash" P.Hash.t (fun _ -> assert false)
+      variant "Node.Contents.v" (fun shallow hash value -> function
+        | Shallow h -> shallow h | Hash (_, x) -> hash x | Value v -> value v
+      )
+      |~ case1 "shallow" P.Hash.t (fun h -> Shallow h)
+      |~ case1 "hash" P.Hash.t (fun h -> Shallow h)
       |~ case1 "value" P.Contents.Val.t (fun v -> Value v)
       |> sealv
 
@@ -146,14 +148,16 @@ module Make (P : S.PRIVATE) = struct
 
     let check msg t =
       match (t.v, t.info.hash, t.info.value) with
-      | Hash (_, x), Some y, _ ->
+      | Shallow x, Some y, _ | Hash (_, x), Some y, _ ->
           if not (x == y) then Fmt.failwith "%s: Hash" msg
       | Value x, _, Some y -> if not (x == y) then Fmt.failwith "%s: Val" msg
-      | (Hash _ | Value _), _, _ -> ()
+      | (Hash _ | Value _ | Shallow _), _, _ -> ()
 
     let of_v v =
       let hash, value =
-        match v with Hash (_, k) -> (Some k, None) | Value v -> (None, Some v)
+        match v with
+        | Shallow k | Hash (_, k) -> (Some k, None)
+        | Value v -> (None, Some v)
       in
       (* hashcons the info *)
       let info =
@@ -173,7 +177,8 @@ module Make (P : S.PRIVATE) = struct
         match (v, info.value, info.hash) with
         | Value _, Some v, _ -> Value v
         | Hash (r, _), _, Some h -> Hash (r, h)
-        | _ -> v
+        | Shallow _, _, Some h -> Shallow h
+        | (Value _ | Hash _ | Shallow _), _, _ -> v
       in
       let t = { v; info } in
       check __LOC__ t;
@@ -184,6 +189,7 @@ module Make (P : S.PRIVATE) = struct
       if clear = Some true then t.info.value <- None;
       match (t.v, t.info.hash) with
       | Hash (_, k), _ -> t.v <- Hash (repo, k)
+      | Shallow _, _ -> ()
       | Value _, None -> t.v <- Hash (repo, k)
       | Value _, Some k -> t.v <- Hash (repo, k)
 
@@ -220,7 +226,7 @@ module Make (P : S.PRIVATE) = struct
       | Some k -> k
       | None -> (
         match value c with
-        | None -> assert false
+        | None -> ( match c.v with Shallow h -> h | _ -> assert false )
         | Some v ->
             let k = P.Contents.Key.digest v in
             let () =
@@ -246,6 +252,7 @@ module Make (P : S.PRIVATE) = struct
     let to_value t =
       match (t.v, t.info.value) with
       | _, Some v -> Lwt.return (Some v)
+      | Shallow _, None -> Lwt.return None
       | Value v, None ->
           t.info.value <- Some v;
           check __LOC__ t;
@@ -300,17 +307,22 @@ module Make (P : S.PRIVATE) = struct
       mutable hash : hash option
     }
 
-    and v = Map of map | Hash of repo * hash | Value of repo * value
+    and v =
+      | Map of map
+      | Hash of repo * hash
+      | Value of repo * value
+      | Shallow of hash
 
     and t = { mutable v : v; mutable info : info }
 
     let check msg t =
       match (t.v, t.info.hash, t.info.map, t.info.value) with
-      | Hash (_, x), Some y, _, _ -> if x != y then Fmt.failwith "%s: Hash" msg
+      | Shallow x, Some y, _, _ | Hash (_, x), Some y, _, _ ->
+          if x != y then Fmt.failwith "%s: Hash" msg
       | Map x, _, Some y, _ -> if x != y then Fmt.failwith "%s: Map" msg
       | Value (_, x), _, _, Some y ->
           if x != y then Fmt.failwith "%s: Value" msg
-      | (Hash _ | Map _ | Value _), _, _, _ -> ()
+      | (Hash _ | Map _ | Value _ | Shallow _), _, _, _ -> ()
 
     let elt t =
       let open Type in
@@ -330,11 +342,15 @@ module Make (P : S.PRIVATE) = struct
 
     let node m =
       let open Type in
-      variant "Node.node" (fun map hash value -> function
-        | Map m -> map m | Hash (_, y) -> hash y | Value (_, v) -> value v )
+      variant "Node.node" (fun map hash value shallow -> function
+        | Map m -> map m
+        | Hash (_, y) -> hash y
+        | Value (_, v) -> value v
+        | Shallow h -> shallow h )
       |~ case1 "map" m (fun m -> Map m)
-      |~ case1 "hash" P.Hash.t (fun _ -> assert false)
+      |~ case1 "hash" P.Hash.t (fun h -> Shallow h)
       |~ case1 "value" P.Node.Val.t (fun _ -> assert false)
+      |~ case1 "shallow" P.Hash.t (fun h -> Shallow h)
       |> sealv
 
     let info_is_empty i = i.map = None && i.value = None
@@ -349,7 +365,7 @@ module Make (P : S.PRIVATE) = struct
           m depth
       and aux depth t =
         match (t.v, t.info.map) with
-        | (Hash _ | Value _), None -> 0
+        | (Hash _ | Value _ | Shallow _), None -> 0
         | Map m, _ | _, Some m -> map depth m
       in
       match i.map with None -> 0 | Some m -> map 0 m
@@ -385,7 +401,7 @@ module Make (P : S.PRIVATE) = struct
                 m
             and aux depth t =
               match (t.v, t.info.map) with
-              | (Hash _ | Value _), None -> ()
+              | (Hash _ | Value _ | Shallow _), None -> ()
               | Map m, _ | _, Some m ->
                   if depth >= max_depth then t.info.map <- None
                   else map depth m
@@ -411,6 +427,7 @@ module Make (P : S.PRIVATE) = struct
         | Map m -> (None, Some m, None)
         | Hash (_, k) -> (Some k, None, None)
         | Value (_, v) -> (None, None, Some v)
+        | Shallow h -> (Some h, None, None)
       in
       (* hashcons info *)
       let info =
@@ -431,7 +448,8 @@ module Make (P : S.PRIVATE) = struct
         | Map _, Some m, _, _ -> Map m
         | Hash (r, _), _, Some h, _ -> Hash (r, h)
         | Value (r, _), _, _, Some v -> Value (r, v)
-        | _ -> v
+        | Shallow _, _, Some h, _ -> Shallow h
+        | (Map _ | Hash _ | Value _ | Shallow _), _, _, _ -> v
       in
       (* hashcons hash *)
       let t = { v; info } in
@@ -446,6 +464,7 @@ module Make (P : S.PRIVATE) = struct
       match t.v with
       | Hash (_, k) -> t.v <- Hash (repo, k)
       | Value _ -> t.v <- Hash (repo, k)
+      | Shallow _ -> ()
       | Map m -> (
           if StepMap.is_empty m then ()
           else
@@ -471,6 +490,8 @@ module Make (P : S.PRIVATE) = struct
     let of_hash repo k = of_v (Hash (repo, k))
 
     let of_value repo v = of_v (Value (repo, v))
+
+    let of_shallow h = of_v (Shallow h)
 
     let map_of_value repo (n : value) : map =
       let entries = P.Node.Val.list n in
@@ -545,7 +566,7 @@ module Make (P : S.PRIVATE) = struct
         | Some v -> hash_of_value t v
         | None -> (
           match map t with
-          | None -> assert false
+          | None -> ( match t.v with Shallow h -> h | _ -> assert false )
           | Some m ->
               let v = value_of_map m in
               t.info.value <- Some v;
@@ -571,6 +592,7 @@ module Make (P : S.PRIVATE) = struct
       | None ->
           ( match t.v with
           | Value (_, v) -> Lwt.return (Some v)
+          | Shallow _ -> Lwt.return None
           | Map m -> Lwt.return (Some (value_of_map m))
           | Hash (repo, k) ->
               Log.debug (fun l -> l "Tree.Node.to_value %a" pp_hash k);
@@ -598,6 +620,7 @@ module Make (P : S.PRIVATE) = struct
           in
           match t.v with
           | Map m -> Lwt.return (Some m)
+          | Shallow _ -> Lwt.return None
           | Value (repo, v) -> Lwt.return (of_value repo v)
           | Hash (repo, k) -> (
               Log.debug (fun l -> l "Tree.Node.to_map %a" pp_hash k);
@@ -1073,6 +1096,8 @@ module Make (P : S.PRIVATE) = struct
     | true -> Some (Node.of_hash repo k)
     | false -> None
 
+  let shallow k = Node.of_shallow k
+
   let import_no_check repo k = Node.of_hash repo k
 
   module Seen_hashes = Cache (P.Hash)
@@ -1113,7 +1138,7 @@ module Make (P : S.PRIVATE) = struct
       | exception Not_found -> (
           Seen_hashes.add seen h ();
           match n.Node.v with
-          | Node.Hash _ -> ()
+          | Node.Hash _ | Node.Shallow _ -> ()
           | Node.Value (_, x) -> Stack.push (add_node n x) todo
           | Node.Map x ->
               (* 1. we push the current node job on the stack. *)
@@ -1133,7 +1158,7 @@ module Make (P : S.PRIVATE) = struct
                   | exception Not_found -> (
                       Seen_hashes.add seen h ();
                       match c.Contents.v with
-                      | Contents.Hash _ -> ()
+                      | Contents.Hash _ | Contents.Shallow _ -> ()
                       | Contents.Value x -> Stack.push (add_contents c x) todo
                       ) )
                 !contents;

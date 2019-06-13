@@ -27,6 +27,8 @@ module Make (P : S.PRIVATE) : sig
 
   val import_no_check : P.Repo.t -> P.Node.key -> node
 
+  val shallow : P.Node.key -> node
+
   val export :
     ?clear:bool ->
     P.Repo.t ->
