@@ -288,7 +288,7 @@ module Make (P : S.PRIVATE) = struct
         match (x.hash, y.hash) with
         | None, None | Some _, None -> ()
         | Some _, Some _ -> ()
-        | None, _ -> x.hash <- y.hash
+        | None, Some _ -> x.hash <- y.hash
       in
       let () =
         match (x.value, y.value) with
@@ -468,7 +468,8 @@ module Make (P : S.PRIVATE) = struct
       mutable value : value option;
       mutable map : map option;
       mutable hash : hash option;
-      mutable color : [ `White | `Black ]
+      mutable color : [ `White | `Black ];
+      mutable findv_cache : map option
     }
 
     and v =
@@ -509,22 +510,29 @@ module Make (P : S.PRIVATE) = struct
       |~ case1 "value" (pair P.Node.Val.t (option m)) (fun _ -> assert false)
       |> sealv
 
-    let rec merge_map ~into:x y =
-      List.iter2
-        (fun (_, x) (_, y) ->
-          match (x, y) with
-          | `Contents (x, _), `Contents (y, _) ->
-              Contents.merge_info ~into:x.Contents.info y.Contents.info
-          | `Node x, `Node y -> (merge_info [@tailcall]) ~into:x.info y.info
-          | _ -> assert false )
-        (StepMap.bindings x) (StepMap.bindings y)
+    let rec merge_elt : type a. into:elt -> elt -> (unit -> a) -> a =
+     fun ~into:x y k ->
+      match (x, y) with
+      | `Contents (x, _), `Contents (y, _) ->
+          Contents.merge_info ~into:x.Contents.info y.Contents.info;
+          k ()
+      | `Node x, `Node y -> (merge_info [@tailcall]) ~into:x.info y.info k
+      | _ -> k ()
 
-    and merge_info ~into:x y =
+    and merge_map : type a. into:map -> map -> (unit -> a) -> a =
+     fun ~into:x y k ->
+      List.iter2
+        (fun (_, x) (_, y) -> (merge_elt [@tailcall]) ~into:x y (fun () -> ()))
+        (StepMap.bindings x) (StepMap.bindings y);
+      k ()
+
+    and merge_info : type a. into:info -> info -> (unit -> a) -> a =
+     fun ~into:x y k ->
       let () =
         match (x.hash, y.hash) with
         | None, None | Some _, None -> ()
         | Some _, Some _ -> ()
-        | None, _ -> x.hash <- y.hash
+        | None, Some _ -> x.hash <- y.hash
       in
       let () =
         match (x.value, y.value) with
@@ -532,12 +540,28 @@ module Make (P : S.PRIVATE) = struct
         | Some _, Some _ -> ()
         | None, _ -> x.value <- y.value
       in
+      let () =
+        match (x.findv_cache, y.findv_cache) with
+        | None, None | Some _, None -> ()
+        | None, Some _ -> x.findv_cache <- y.findv_cache
+        | Some a, Some b ->
+            let m =
+              StepMap.union
+                (fun _ a b ->
+                  (merge_elt [@tailcall]) ~into:a b (fun () -> Some a) )
+                a b
+            in
+            if m != a then x.findv_cache <- Some m
+      in
       match (x.map, y.map) with
-      | None, None | Some _, None -> ()
-      | None, Some _ -> x.map <- y.map
-      | Some x, Some y -> (merge_map [@tailcall]) ~into:x y
+      | None, None | Some _, None -> k ()
+      | None, Some _ ->
+          x.map <- y.map;
+          k ()
+      | Some x, Some y -> (merge_map [@tailcall]) ~into:x y k
 
-    let info_is_empty i = i.map = None && i.value = None
+    let info_is_empty i =
+      i.map = None && i.value = None && i.findv_cache = None && i.hash = None
 
     let depth i =
       let rec map depth m k =
@@ -560,7 +584,11 @@ module Make (P : S.PRIVATE) = struct
     let width i = match i.map with None -> 0 | Some m -> StepMap.cardinal m
 
     let dump_info ppf i =
-      let value = match i.value with None -> "<none>" | Some _ -> "<some>" in
+      let value =
+        match i.value with
+        | None -> "<none>"
+        | Some v -> Type.to_string P.Node.Val.t v
+      in
       let map = match i.map with None -> "<none>" | Some _ -> "<some>" in
       let hash = match i.hash with None -> "<none>" | Some _ -> "<some>" in
       let empty = if info_is_empty i then "*" else "" in
@@ -575,6 +603,15 @@ module Make (P : S.PRIVATE) = struct
 
     let mark c t = t.color <- c
 
+    let hashcons t =
+      match (t.v, t.info.hash, t.info.map, t.info.value) with
+      | Hash (r, h), Some h', _, _ -> if h != h' then t.v <- Hash (r, h')
+      | Map v, _, Some v', _ ->
+          if v != v' then merge_map ~into:v' v (fun () -> t.v <- Map v')
+      | Value (r, v, None), _, _, Some v' ->
+          if v != v' then t.v <- Value (r, v', None)
+      | _ -> ()
+
     let of_v v =
       let hash, map, value =
         match v with
@@ -583,29 +620,37 @@ module Make (P : S.PRIVATE) = struct
         | Value (_, v, None) -> (None, None, Some v)
         | Value _ -> (None, None, None)
       in
+      let color = `White in
+      let findv_cache = None in
       (* hashcons info *)
       let info =
         match hash with
-        | None -> { hash; map; value; color = `White }
+        | None -> { hash; map; value; color; findv_cache }
         | Some k -> (
             cnt.node_cache_find <- cnt.node_cache_find + 1;
             match Cache.find cache k with
             | exception Not_found ->
                 cnt.node_cache_miss <- cnt.node_cache_miss + 1;
-                let i = { hash; map; value; color = `White } in
+                let i = { hash; map; value; color; findv_cache } in
                 Cache.add cache k i;
                 i
             | i -> i )
       in
       (* hashcons v *)
-      let v =
-        match (v, info.map, info.hash, info.value) with
-        | Map _, Some m, _, _ -> Map m
-        | Hash (r, _), _, Some h, _ -> Hash (r, h)
-        | Value (r, _, None), _, _, Some v -> Value (r, v, None)
-        | _ -> v
-      in
-      { v; info }
+      let t = { v; info } in
+      hashcons t;
+      t
+
+    let t node = Type.map node of_v (fun t -> t.v)
+
+    let _, t =
+      Type.mu2 (fun _ y ->
+          let elt = elt_t y in
+          let v = v_t (map_t elt) in
+          let t = t v in
+          (v, t) )
+
+    let elt_t = elt_t t
 
     let rec clear_map ~max_depth depth m =
       List.iter
@@ -629,12 +674,16 @@ module Make (P : S.PRIVATE) = struct
           | Some (Map m), _ | _, Some m -> StepMap.bindings m
           | _ -> []
         in
+        let findv =
+          match i.findv_cache with Some m -> StepMap.bindings m | None -> []
+        in
         if depth >= max_depth && not (info_is_empty i) then (
           i.color <- `Black;
           i.value <- None;
           i.map <- None;
-          i.hash <- None );
-        (clear_map [@tailcall]) ~max_depth depth (map @ added) )
+          i.hash <- None;
+          i.findv_cache <- None );
+        (clear_map [@tailcall]) ~max_depth depth (map @ added @ findv) )
 
     and clear ~max_depth depth t = clear_info ~v:t.v ~max_depth depth t.info
 
@@ -660,17 +709,6 @@ module Make (P : S.PRIVATE) = struct
         | None -> t.v <- Hash (repo, k)
         | Some k -> t.v <- Hash (repo, k) )
 
-    let t node = Type.map node of_v (fun t -> t.v)
-
-    let _, t =
-      Type.mu2 (fun _ y ->
-          let elt = elt_t y in
-          let v = v_t (map_t elt) in
-          let t = t v in
-          (v, t) )
-
-    let elt_t = elt_t t
-
     let dump = Type.pp_json ~minify:false t
 
     let of_map m = of_v (Map m)
@@ -685,9 +723,6 @@ module Make (P : S.PRIVATE) = struct
       | _ -> of_map StepMap.empty
 
     let map_of_value repo (n : value) : map =
-      Fmt.epr "XXX\n%!";
-      let x = Printexc.get_callstack 100 in
-      Printexc.print_raw_backtrace stderr x;
       cnt.node_val_list <- cnt.node_val_list + 1;
       let entries = P.Node.Val.list n in
       let aux = function
@@ -722,17 +757,6 @@ module Make (P : S.PRIVATE) = struct
           v
       | _, v -> v
 
-    let hashcons t =
-      match (t.v, t.info.hash, t.info.map, t.info.value) with
-      | Hash (r, h), Some h', _, _ -> if h != h' then t.v <- Hash (r, h')
-      | Map v, _, Some v', _ ->
-          if v != v' then (
-            merge_map ~into:v' v;
-            t.v <- Map v' )
-      | Value (r, v, None), _, _, Some v' ->
-          if v != v' then t.v <- Value (r, v', None)
-      | _ -> ()
-
     let hash_of_value t v =
       cnt.node_hash <- cnt.node_hash + 1;
       let k = P.Node.Key.hash v in
@@ -743,11 +767,9 @@ module Make (P : S.PRIVATE) = struct
         | i ->
             let old = t.info in
             t.info <- i;
-            merge_info ~into:i old;
-            hashcons t
+            merge_info ~into:i old (fun () -> hashcons t)
         | exception Not_found ->
             cnt.node_cache_miss <- cnt.node_cache_miss + 1;
-            t.info.hash <- Some k;
             Cache.add cache k t.info
       in
       match t.info.hash with Some k -> k | None -> k
@@ -757,16 +779,18 @@ module Make (P : S.PRIVATE) = struct
       match hash t with
       | Some h -> k h
       | None -> (
-        match t.v with
-        | Hash (_, h) -> k h
-        | Value (_, v, None) -> k (hash_of_value t v)
-        | Value (repo, v, Some a) ->
-            value_of_adds t repo v a (fun v -> k (hash_of_value t v))
-        | Map m ->
-            Fmt.epr "XXX MAP\n%!";
-            (value_of_map [@tailcall]) m @@ fun v ->
-            t.info.value <- Some v;
-            k (hash_of_value t v) )
+          let of_value v = k (hash_of_value t v) in
+          match value t with
+          | Some v -> of_value v
+          | None -> (
+            match t.v with
+            | Hash (_, h) -> k h
+            | Value (_, v, None) -> of_value v
+            | Value (_, v, Some a) -> value_of_adds t v a of_value
+            | Map m ->
+                (value_of_map [@tailcall]) m @@ fun v ->
+                t.info.value <- Some v;
+                of_value v ) )
 
     and value_of_map : type a. map -> (value -> a) -> a =
      fun map k ->
@@ -777,10 +801,6 @@ module Make (P : S.PRIVATE) = struct
           | [] ->
               let alist = List.rev acc in
               cnt.node_val_v <- cnt.node_val_v + 1;
-              flush stderr;
-              Fmt.epr "XXX value_of_map %a\n%!" (Type.pp (map_t elt_t)) map;
-              let x = Printexc.get_callstack 100 in
-              Printexc.print_raw_backtrace stderr x;
               k (P.Node.Val.v alist)
           | (step, v) :: rest -> (
             match v with
@@ -800,20 +820,15 @@ module Make (P : S.PRIVATE) = struct
       | `Contents (c, m) -> k (`Contents (Contents.to_hash c, m))
       | `Node n -> (to_hash [@tailcall]) n (fun n -> k (`Node n))
 
-    and value_of_adds : type a. t -> repo -> value -> map -> (value -> a) -> a
-        =
-     fun t repo v added k ->
+    and value_of_adds : type a. t -> value -> map -> (value -> a) -> a =
+     fun t v added k ->
       let added = StepMap.bindings added in
       let v =
         List.fold_left
           (fun v (k, e) -> (value_of_elt [@tailcall]) e (P.Node.Val.add v k))
           v added
       in
-      let x = of_value repo v in
-      let i = x.info in
-      merge_info ~into:i t.info;
-      t.info <- i;
-      hashcons t;
+      t.info.value <- Some v;
       k v
 
     let to_hash t = to_hash t (fun t -> t)
@@ -840,8 +855,8 @@ module Make (P : S.PRIVATE) = struct
       | None -> (
         match t.v with
         | Value (_, v, None) -> Lwt.return (Some v)
-        | Value (repo, v, Some m) ->
-            value_of_adds t repo v m (fun v -> Lwt.return (Some v))
+        | Value (_, v, Some m) ->
+            value_of_adds t v m (fun v -> Lwt.return (Some v))
         | Map m -> Lwt.return (Some (value_of_map t m))
         | Hash (repo, h) -> value_of_hash t repo h )
 
@@ -891,7 +906,13 @@ module Make (P : S.PRIVATE) = struct
       | Map x, Map y -> map_equal x y
       | Value (_, x, Some a), Value (_, y, Some b) ->
           Type.equal P.Node.Val.t x y && map_equal a b
-      | _ -> hash_equal (to_hash x) (to_hash y)
+      | _ -> (
+        match (value x, value y) with
+        | Some x, Some y -> Type.equal P.Node.Val.t x y
+        | _ -> (
+          match (map x, map y) with
+          | Some x, Some y -> map_equal x y
+          | _ -> hash_equal (to_hash x) (to_hash y) ) )
 
     let is_empty t =
       match map t with
@@ -921,8 +942,12 @@ module Make (P : S.PRIVATE) = struct
     let listv t =
       to_map t >|= function None -> [] | Some m -> StepMap.bindings m
 
+    let add_to_findv_cache t step v =
+      match t.info.findv_cache with
+      | None -> t.info.findv_cache <- Some (StepMap.singleton step v)
+      | Some m -> t.info.findv_cache <- Some (StepMap.add step v m)
+
     let findv t step =
-      Log.debug (fun l -> l "Node.findv");
       let of_map m =
         match StepMap.find step m with
         | exception Not_found -> Lwt.return None
@@ -937,16 +962,18 @@ module Make (P : S.PRIVATE) = struct
         | None -> Lwt.return None
         | Some (`Contents (c, m)) -> (
             let c = Contents.of_hash repo c in
+            let (v : elt) = `Contents (c, m) in
+            add_to_findv_cache t step v;
             Contents.to_value c >|= function
             | None -> None
             | Some c -> Some (`Contents (c, m)) )
         | Some (`Node n) ->
             let n = of_hash repo n in
-            Lwt.return (Some (`Node n))
+            let v = `Node n in
+            add_to_findv_cache t step v;
+            Lwt.return (Some v)
       in
-      match map t with
-      | Some m -> of_map m
-      | None -> (
+      let of_t () =
         match t.v with
         | Map m -> of_map m
         | Value (repo, v, None) -> of_value repo v
@@ -954,10 +981,23 @@ module Make (P : S.PRIVATE) = struct
             of_map m >>= function
             | Some _ as v -> Lwt.return v
             | None -> of_value repo v )
-        | Hash (repo, v) -> (
-            value_of_hash t repo v >>= function
-            | None -> Lwt.return None
-            | Some v -> of_value repo v ) )
+        | Hash (repo, h) -> (
+          match value t with
+          | Some v -> of_value repo v
+          | None -> (
+              value_of_hash t repo h >>= function
+              | None -> Lwt.return None
+              | Some v -> of_value repo v ) )
+      in
+      match map t with
+      | Some m -> of_map m
+      | None -> (
+        match t.info.findv_cache with
+        | None -> of_t ()
+        | Some m -> (
+            of_map m >>= function
+            | None -> of_t ()
+            | Some _ as r -> Lwt.return r ) )
 
     let dummy_marks = Hashes.create 0
 
@@ -1035,11 +1075,15 @@ module Make (P : S.PRIVATE) = struct
       | Map m -> Lwt.return (of_map m)
       | Value (repo, n, None) -> Lwt.return (of_value repo n StepMap.empty)
       | Value (repo, n, Some m) -> Lwt.return (of_value repo n m)
-      | Hash (repo, h) ->
-          (value_of_hash t repo h >|= function
-           | Some v -> v
-           | None -> P.Node.Val.empty)
-          >|= fun v -> of_value repo v StepMap.empty
+      | Hash (repo, h) -> (
+        match (value t, map t) with
+        | Some v, _ -> Lwt.return (of_value repo v StepMap.empty)
+        | _, Some m -> Lwt.return (of_map m)
+        | None, None ->
+            (value_of_hash t repo h >|= function
+             | Some v -> v
+             | None -> P.Node.Val.empty)
+            >|= fun v -> of_value repo v StepMap.empty )
 
     let rec merge : type a. (t Merge.t -> a) -> a =
      fun k ->
@@ -1380,69 +1424,78 @@ module Make (P : S.PRIVATE) = struct
   let import_no_check repo k = Node.of_hash repo k
 
   let export ?clear repo contents_t node_t n =
-    let seen = Hashtbl.create 127 in
+    let seen = Hashes.create 127 in
     let add_node n v () =
       cnt.node_add <- cnt.node_add + 1;
-      P.Node.add node_t v >|= fun k ->
-      (*      let k' = Node.to_hash n in
-        assert (Type.equal P.Hash.t k k'); *)
-      Node.export ?clear repo n k
+      P.Node.add node_t v >|= fun k -> Node.export ?clear repo n k
     in
     let add_contents c x () =
       cnt.contents_add <- cnt.contents_add + 1;
-      P.Contents.add contents_t x >|= fun k ->
-      (*      let k' = Contents.to_hash c in
-        assert (Type.equal P.Hash.t k k'); *)
-      Contents.export ?clear repo c k
+      P.Contents.add contents_t x >|= fun k -> Contents.export ?clear repo c k
     in
+    let add_node_map n x () = add_node n (Node.value_of_map n x) () in
     let todo = Stack.create () in
     let rec add_to_todo : type a. _ -> (unit -> a Lwt.t) -> a Lwt.t =
      fun n k ->
       let h = Node.to_hash n in
-      if Hashtbl.mem seen h then k ()
+      if Hashes.mem seen h then k ()
       else (
-        Hashtbl.add seen h ();
+        Hashes.add seen h ();
         match n.Node.v with
-        | Hash _ -> k ()
+        | Hash _ ->
+            Node.export ?clear repo n h;
+            k ()
         | Value (_, x, None) ->
             Stack.push (add_node n x) todo;
             k ()
         | Map _ | Value (_, _, Some _) -> (
             cnt.node_mem <- cnt.node_mem + 1;
             P.Node.mem node_t h >>= function
-            | true -> k ()
+            | true ->
+                Node.export ?clear repo n h;
+                k ()
             | false ->
-                (* 1. we push the current node job on the stack. *)
-                (Node.to_value n >|= function
-                 | None -> assert false
-                 | Some v -> Stack.push (add_node n v) todo)
-                >>= fun () ->
-                let contents = ref [] in
-                let nodes = ref [] in
-                let x =
+                let children =
                   match n.v with
                   | Map m -> m
                   | Value (_, _, Some m) -> m
                   | _ -> assert false
                 in
+                (* 1. convert partial values to total values *)
+                ( match n.v with
+                | Value (_, _, Some _) -> (
+                    Node.to_value n >|= function
+                    | None -> ()
+                    | Some v -> n.v <- Value (repo, v, None) )
+                | _ -> Lwt.return () )
+                >>= fun () ->
+                (* 2. push the current node job on the stack. *)
+                let () =
+                  match (n.v, Node.value n) with
+                  | _, Some v -> Stack.push (add_node n v) todo
+                  | Map x, None -> Stack.push (add_node_map n x) todo
+                  | _ -> assert false
+                in
+                let contents = ref [] in
+                let nodes = ref [] in
                 StepMap.iter
                   (fun _ -> function
                     | `Contents c -> contents := c :: !contents
                     | `Node n -> nodes := n :: !nodes )
-                  x;
-                (* 2. we push the contents job on the stack. *)
+                  children;
+                (* 2. push the contents job on the stack. *)
                 List.iter
                   (fun (c, _) ->
                     let h = Contents.to_hash c in
-                    if Hashtbl.mem seen h then ()
+                    if Hashes.mem seen h then ()
                     else (
-                      Hashtbl.add seen h ();
+                      Hashes.add seen h ();
                       match c.Contents.v with
                       | Contents.Hash _ -> ()
                       | Contents.Value x -> Stack.push (add_contents c x) todo )
                     )
                   !contents;
-                (* 3. we push the children jobs on the stack. *)
+                (* 3. push the children jobs on the stack. *)
                 List.iter
                   (fun n ->
                     Stack.push
