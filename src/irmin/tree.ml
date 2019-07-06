@@ -774,69 +774,70 @@ module Make (P : S.PRIVATE) = struct
       in
       match t.info.hash with Some k -> k | None -> k
 
-    let rec to_hash : type a. t -> (hash -> a) -> a =
-     fun t k ->
+    let rec to_hash t =
       match hash t with
-      | Some h -> k h
+      | Some h -> h
       | None -> (
-          let of_value v = k (hash_of_value t v) in
+          let of_value v = hash_of_value t v in
           match value t with
           | Some v -> of_value v
           | None -> (
             match t.v with
-            | Hash (_, h) -> k h
+            | Hash (_, h) -> h
             | Value (_, v, None) -> of_value v
-            | Value (_, v, Some a) -> value_of_adds t v a of_value
+            | Value (_, v, Some a) ->
+                let v = value_of_adds t v a in
+                t.info.value <- Some v;
+                of_value v
             | Map m ->
-                (value_of_map [@tailcall]) m @@ fun v ->
+                let v = value_of_map m in
                 t.info.value <- Some v;
                 of_value v ) )
 
-    and value_of_map : type a. map -> (value -> a) -> a =
-     fun map k ->
-      if StepMap.is_empty map then k P.Node.Val.empty
+    and value_of_map map =
+      if StepMap.is_empty map then P.Node.Val.empty
       else
         let alist = StepMap.bindings map in
         let rec aux acc = function
           | [] ->
               let alist = List.rev acc in
               cnt.node_val_v <- cnt.node_val_v + 1;
-              k (P.Node.Val.v alist)
+              P.Node.Val.v alist
           | (step, v) :: rest -> (
             match v with
             | `Contents (c, m) ->
                 let v = `Contents (Contents.to_hash c, m) in
                 (aux [@tailcall]) ((step, v) :: acc) rest
             | `Node n ->
-                (to_hash [@tailcall]) n @@ fun n ->
+                let n = to_hash n in
                 let v = `Node n in
                 (aux [@tailcall]) ((step, v) :: acc) rest )
         in
         aux [] alist
 
-    and value_of_elt : type a. elt -> (P.Node.Val.value -> a) -> a =
-     fun e k ->
+    and value_of_elt e =
       match e with
-      | `Contents (c, m) -> k (`Contents (Contents.to_hash c, m))
-      | `Node n -> (to_hash [@tailcall]) n (fun n -> k (`Node n))
+      | `Contents (c, m) -> `Contents (Contents.to_hash c, m)
+      | `Node n ->
+          let n = to_hash n in
+          `Node n
 
-    and value_of_adds : type a. t -> value -> map -> (value -> a) -> a =
-     fun t v added k ->
+    and value_of_adds t v added =
       let added = StepMap.bindings added in
       let v =
         List.fold_left
-          (fun v (k, e) -> (value_of_elt [@tailcall]) e (P.Node.Val.add v k))
+          (fun v (k, e) ->
+            let e = value_of_elt e in
+            P.Node.Val.add v k e )
           v added
       in
       t.info.value <- Some v;
-      k v
-
-    let to_hash t = to_hash t (fun t -> t)
+      v
 
     let value_of_map t m =
-      value_of_map m (fun v ->
-          t.info.value <- Some v;
-          v )
+      let v = value_of_map m in
+      t.info.value <- Some v;
+      v
 
     let value_of_hash t repo k =
       match t.info.value with
@@ -856,7 +857,8 @@ module Make (P : S.PRIVATE) = struct
         match t.v with
         | Value (_, v, None) -> Lwt.return (Some v)
         | Value (_, v, Some m) ->
-            value_of_adds t v m (fun v -> Lwt.return (Some v))
+            let v = value_of_adds t v m in
+            Lwt.return (Some v)
         | Map m -> Lwt.return (Some (value_of_map t m))
         | Hash (repo, h) -> value_of_hash t repo h )
 
