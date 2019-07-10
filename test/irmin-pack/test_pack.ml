@@ -79,15 +79,19 @@ module S = struct
 
   type hash = Irmin.Hash.SHA1.t
 
+  let magic = 'T'
+
   module H = Irmin.Hash.Typed (Irmin.Hash.SHA1) (Irmin.Contents.String)
 
   let hash = H.hash
 
-  let encode_bin ~dict:_ ~offset:_ x _k =
-    Irmin.Type.encode_bin ~headers:false t x
+  let item = Irmin_pack.item_t Irmin.Hash.SHA1.t t
+
+  let encode_bin ~dict:_ ~offset:_ x =
+    Irmin.Type.encode_bin ~headers:false item x
 
   let decode_bin ~dict:_ ~hash:_ x off =
-    let _, v = Irmin.Type.decode_bin ~headers:false t x off in
+    let _, v = Irmin.Type.decode_bin ~headers:false item x off in
     v
 end
 
@@ -104,10 +108,9 @@ let test_pack _switch () =
   let h2 = sha1 x2 in
   let h3 = sha1 x3 in
   let h4 = sha1 x4 in
-  Lwt_list.iter_s
-    (fun (k, v) -> Pack.append t k v)
-    [ (h1, x1); (h2, x2); (h3, x3); (h4, x4) ]
-  >>= fun () ->
+  List.iter
+    (fun (k, v) -> Pack.unsafe_append t k v)
+    [ (h1, x1); (h2, x2); (h3, x3); (h4, x4) ];
   let test t =
     Pack.find t h1 >|= get >>= fun y1 ->
     Alcotest.(check string) "x1" x1 y1;

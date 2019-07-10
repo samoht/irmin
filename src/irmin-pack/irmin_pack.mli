@@ -50,23 +50,32 @@ module Dict : sig
   val v : ?fresh:bool -> string -> t
 end
 
+type ('k, 'v) item = { magic : char; hash : 'k; v : 'v }
+
+val item_t : 'k Irmin.Type.t -> 'v Irmin.Type.t -> ('k, 'v) item Irmin.Type.t
+
 module type S = sig
   include Irmin.Type.S
 
   type hash
+
+  val magic : char
 
   val hash : t -> hash
 
   val encode_bin :
     dict:(string -> int) ->
     offset:(hash -> int64 option) ->
-    t ->
-    hash ->
+    (hash, t) item ->
     (string -> unit) ->
     unit
 
   val decode_bin :
-    dict:(int -> string option) -> hash:(int64 -> hash) -> string -> int -> t
+    dict:(int -> string option) ->
+    hash:(int64 -> hash) ->
+    string ->
+    int ->
+    (hash, t) item
 end
 
 module Atomic_write (K : Irmin.Type.S) (V : Irmin.Hash.S) : sig
@@ -83,7 +92,7 @@ module Pack (K : Irmin.Hash.S) : sig
 
     val find : [> `Read ] t -> K.t -> V.t option Lwt.t
 
-    val append : 'a t -> K.t -> V.t -> unit Lwt.t
+    val unsafe_append : 'a t -> K.t -> V.t -> unit
   end
 end
 
@@ -94,7 +103,7 @@ type stats = {
   pack_cache_misses : float;
   search_steps : float;
   offset_ratio : float;
-  offset_significance : int;
+  offset_significance : int
 }
 
 val reset_stats : unit -> unit
