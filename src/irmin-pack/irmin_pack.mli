@@ -16,7 +16,16 @@
 
 val config : ?fresh:bool -> string -> Irmin.config
 
+module type CONFIG = sig
+  val entries_per_level : int
+  (** number of inodes per level *)
+
+  val stable_hash_limit : int
+  (** number of entries before changing the hash function. *)
+end
+
 module Make_ext
+    (Conf : CONFIG)
     (Metadata : Irmin.Metadata.S)
     (Contents : Irmin.Contents.S)
     (Path : Irmin.Path.S)
@@ -36,9 +45,9 @@ module Make_ext
    and type metadata = Metadata.t
    and type Key.step = Path.step
 
-module Make : Irmin.S_MAKER
+module Make (Conf : CONFIG) : Irmin.S_MAKER
 
-module KV : Irmin.KV_MAKER
+module KV (Conf : CONFIG) : Irmin.KV_MAKER
 
 module Dict : sig
   type t

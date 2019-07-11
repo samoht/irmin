@@ -1029,7 +1029,14 @@ module Atomic_write (K : Irmin.Type.S) (V : Irmin.Hash.S) = struct
   let unwatch t = W.unwatch t.w
 end
 
+module type CONFIG = sig
+  val entries_per_level : int
+
+  val stable_hash_limit : int
+end
+
 module Make_ext
+    (Conf : CONFIG)
     (M : Irmin.Metadata.S)
     (C : Irmin.Contents.S)
     (P : Irmin.Path.S)
@@ -1073,14 +1080,6 @@ struct
     end
 
     module Inode = struct
-      module Conf = struct
-        (* number of inodes per level *)
-        let entries = 32
-
-        (* number of entries before changing the hash function. *)
-        let stable_hash_limit = 256
-      end
-
       module Val = struct
         type hash = H.t
 
@@ -1106,30 +1105,38 @@ struct
 
         type inode = {
           index : int;
+          length : int;
           mutable hash : H.t option;
           mutable tree : t option
         }
 
         and entry = Empty | Inode of inode | Values of v list
 
-        and t = { length : int; entries : entry array }
+        and t = { cardinal : int; entries : entry array }
 
         let v_t : v Irmin.Type.t =
           let open Irmin.Type in
-          variant "Node.v" (fun node contents -> function
+          variant "Node.v" (fun node contents contents_x -> function
             | Node n -> node (n.name, n.node)
-            | Contents c -> contents (c.metadata, c.name, c.node) )
+            | Contents c ->
+                if Irmin.Type.equal M.t M.default c.metadata then
+                  contents (c.name, c.node)
+                else contents_x (c.metadata, c.name, c.node) )
           |~ case1 "Node" (pair P.step_t H.t) (fun (name, node) ->
                  Node { name; node } )
-          |~ case1 "Contents" (triple M.t P.step_t H.t)
+          |~ case1 "Contents" (pair P.step_t H.t) (fun (name, node) ->
+                 Contents { metadata = M.default; name; node } )
+          |~ case1 "Contents-x" (triple M.t P.step_t H.t)
                (fun (metadata, name, node) -> Contents { metadata; name; node }
              )
           |> sealv
 
         let inode_t t : inode Irmin.Type.t =
           let open Irmin.Type in
-          record "Node.inode" (fun index hash tree -> { index; hash; tree })
+          record "Node.inode" (fun index length hash tree ->
+              { index; length; hash; tree } )
           |+ field "index" int (fun t -> t.index)
+          |+ field "length" int (fun t -> t.length)
           |+ field "hash" (option H.t) (fun t -> t.hash)
           |+ field "tree" (option t) (fun t -> t.tree)
           |> sealr
@@ -1140,13 +1147,13 @@ struct
             | Empty -> empty | Inode i -> inode i | Values v -> values v )
           |~ case0 "Empty" Empty
           |~ case1 "Inode" inode (fun i -> Inode i)
-          |~ case1 "Value" (list v_t) (fun v -> Values v)
+          |~ case1 "Values" (list v_t) (fun v -> Values v)
           |> sealv
 
         let t entry : t Irmin.Type.t =
           let open Irmin.Type in
-          record "Node.t" (fun length entries -> { length; entries })
-          |+ field "length" int (fun t -> t.length)
+          record "Node.t" (fun cardinal entries -> { cardinal; entries })
+          |+ field "cardinal" int (fun t -> t.cardinal)
           |+ field "entries" (array entry) (fun t -> t.entries)
           |> sealr
 
@@ -1154,40 +1161,57 @@ struct
 
         module H_node = Irmin.Hash.Typed (H) (Node)
 
+        module H_t =
+          Irmin.Hash.Typed
+            (H)
+            (struct
+              type nonrec t = t
+
+              let t = t
+            end)
+
+        let compare_step a b = Irmin.Type.compare P.step_t a b
+
+        let compare_v a b =
+          match (a, b) with
+          | Contents a, Contents b -> compare_step a.name b.name
+          | Node a, Node b -> compare_step a.name b.name
+          | Contents _, _ -> 1
+          | _, Contents _ -> -1
+
         module Bin = struct
-          type entry = Value of v | Inode of (int * H.t)
+          type inode = { index : int; length : int; hash : H.t }
+
+          type entry = Value of v | Inode of inode
+
+          let inode : inode Irmin.Type.t =
+            let open Irmin.Type in
+            record "Bin.inode" (fun index length hash ->
+                { index; length; hash } )
+            |+ field "index" int (fun t -> t.index)
+            |+ field "length" int (fun t -> t.length)
+            |+ field "hash" H.t (fun t -> t.hash)
+            |> sealr
 
           let entry : entry Irmin.Type.t =
             let open Irmin.Type in
             variant "Bin.elt" (fun value inode -> function
               | Value v -> value v | Inode i -> inode i )
             |~ case1 "Value" v_t (fun v -> Value v)
-            |~ case1 "Inode" (pair int H.t) (fun i -> Inode i)
+            |~ case1 "Inode" inode (fun i -> Inode i)
             |> sealv
 
           type t = entry list
 
           let t = Irmin.Type.list entry
-
-          let compare_step a b = Irmin.Type.compare P.step_t a b
-
-          let compare a b =
-            match (a, b) with
-            | Value (Contents a), Value (Contents b) ->
-                compare_step a.name b.name
-            | Value (Node a), Value (Node b) -> compare_step a.name b.name
-            | Inode (a, _), Inode (b, _) -> compare a b
-            | Value (Contents _), _ -> 1
-            | Value (Node _), _ -> 1
-            | _, Value (Contents _) -> -1
-            | _, Value (Node _) -> -1
         end
 
         module H_bin = Irmin.Hash.Typed (H) (Bin)
 
-        let empty () = { length = 0; entries = Array.make Conf.entries Empty }
+        let empty () =
+          { cardinal = 0; entries = Array.make Conf.entries_per_level Empty }
 
-        let is_empty t = t.length = 0
+        let is_empty t = t.cardinal = 0
 
         let v_of_value name (v : Node.value) =
           match v with
@@ -1200,19 +1224,21 @@ struct
               (name, `Contents (node, metadata))
 
         let index ~seed k =
-          abs (Irmin.Type.short_hash P.step_t ~seed k) mod Conf.entries
+          abs (Irmin.Type.short_hash P.step_t ~seed k)
+          mod Conf.entries_per_level
 
-        let inode ?tree ?hash index = { index; hash; tree }
+        let inode ?tree ?hash ~index ~length () = { index; length; hash; tree }
 
         let rec of_values : type a. seed:int -> _ -> (t -> a) -> a =
          fun ~seed l k ->
-          let length = List.length l in
-          let entries = Array.make Conf.entries Empty in
+          let cardinal = List.length l in
+          let entries = Array.make Conf.entries_per_level Empty in
           List.iter
             (fun (s, v) ->
               let e = v_of_value s v in
               let i = index ~seed s in
               let values =
+                Fmt.epr "XXX a\n%!";
                 match entries.(i) with
                 | Empty -> Values [ e ]
                 | Values vs -> Values (e :: vs)
@@ -1220,15 +1246,17 @@ struct
               in
               entries.(i) <- values )
             l;
-          if length > Conf.entries then
-            Array.iteri
-              (fun i -> function Empty -> ()
-                | Values vs ->
+          Array.iteri
+            (fun i -> function
+              | Values vs ->
+                  let length = List.length vs in
+                  if length > Conf.entries_per_level then
                     of_values ~seed:(seed + 1) (List.map value_of_v vs)
-                    @@ fun tree -> entries.(i) <- Inode (inode ~tree i)
-                | Inode _ -> assert false )
-              entries;
-          k { length; entries }
+                    @@ fun tree ->
+                    entries.(i) <- Inode (inode ~tree ~length ~index:i ())
+              | Empty -> () | Inode _ -> assert false )
+            entries;
+          k { cardinal; entries }
 
         let of_values ~seed l = of_values ~seed l (fun x -> x)
 
@@ -1253,12 +1281,13 @@ struct
 
         let list ~find t =
           let elts = list_values ~find [] t in
-          assert (List.length elts = t.length);
+          assert (List.length elts = t.cardinal);
           elts
 
         let find_value ~seed ~find t s =
           let rec aux ~seed t =
             let i = index ~seed s in
+            Fmt.epr "XXX b\n%!";
             let x = t.entries.(i) in
             match x with
             | Empty -> None
@@ -1281,46 +1310,52 @@ struct
 
         let name = function Contents { name; _ } | Node { name; _ } -> name
 
+        let pp_step = Irmin.Type.pp P.step_t
+
         let rec add ~seed ~find ~copy t s v k =
+          Log.debug (fun l ->
+              l "Inode.add seed:%d copy:%b %a" seed copy pp_step s );
           match find_value ~seed ~find t s with
           | Some v' when Irmin.Type.equal Node.value_t v v' -> k t
           | r -> (
-              let length =
-                match r with None -> t.length + 1 | Some _ -> t.length
+              let cardinal =
+                match r with None -> t.cardinal + 1 | Some _ -> t.cardinal
               in
               let entries = if copy then Array.copy t.entries else t.entries in
               let i = index ~seed s in
+              Fmt.epr "XXX c\n%!";
               match entries.(i) with
               | Empty ->
                   entries.(i) <- Values [ v_of_value s v ];
-                  { length; entries }
+                  { cardinal; entries }
               | Inode n ->
                   let t = get_tree ~find n in
                   add ~seed:(seed + 1) ~find ~copy t s v @@ fun t ->
-                  let inode = inode ~tree:t i in
+                  let inode = inode ~tree:t ~index:i ~length:t.cardinal () in
                   let entry = Inode inode in
                   entries.(i) <- entry;
-                  k { length; entries }
+                  k { cardinal; entries }
               | Values vs ->
                   let same_name e = Irmin.Type.equal P.step_t (name e) s in
                   let vs = List.filter (fun e -> not (same_name e)) vs in
-                  let vs = v_of_value s v :: vs in
-                  if List.length vs > Conf.entries then
+                  let vs = List.fast_sort compare_v (v_of_value s v :: vs) in
+                  let length = List.length vs in
+                  if length > Conf.entries_per_level then
                     let vs = List.map value_of_v vs in
                     let tree = of_values ~seed:(seed + 1) vs in
-                    let inode = inode ~tree i in
+                    let inode = inode ~tree ~index:i ~length () in
                     entries.(i) <- Inode inode
                   else entries.(i) <- Values vs;
-                  k { length; entries } )
+                  k { cardinal; entries } )
 
-        let rec remove : type a. seed:_ -> find:_ -> _ -> _ -> (t -> a) -> a =
-         fun ~seed ~find t s k ->
+        let rec remove ~seed ~find t s k =
           match find_value ~seed ~find t s with
           | None -> k t
           | Some _ -> (
-              let length = t.length - 1 in
+              let cardinal = t.cardinal - 1 in
               let entries = Array.copy t.entries in
               let i = index ~seed s in
+              Fmt.epr "XXX d\n%!";
               match entries.(i) with
               | Empty -> assert false
               | Values vs ->
@@ -1331,23 +1366,27 @@ struct
                     | vs -> Values vs
                   in
                   entries.(i) <- e;
-                  k { entries; length }
+                  k { entries; cardinal }
               | Inode t ->
                   let t = get_tree ~find t in
                   remove ~seed:(seed + 1) ~find t s @@ fun tree ->
-                  if tree.length - 1 <= Conf.entries then
+                  let length = tree.cardinal - 1 in
+                  if length <= Conf.entries_per_level then (
                     let vs = list ~find tree in
                     let same_name e = Irmin.Type.equal P.step_t (fst e) s in
                     let vs = List.filter (fun e -> not (same_name e)) vs in
                     let vs = List.map (fun (s, v) -> v_of_value s v) vs in
-                    entries.(i) <- Values vs
-                  else entries.(i) <- Inode (inode ~tree i);
-                  k { entries; length } )
+                    entries.(i) <- Values vs;
+                    k { entries; cardinal } )
+                  else
+                    let inode = inode ~tree ~index:i ~length () in
+                    entries.(i) <- Inode inode;
+                    k { entries; cardinal } )
 
         let remove ~find t s = remove ~find ~seed:0 t s (fun x -> x)
 
         let v l : t =
-          if List.length l < Conf.entries then of_values ~seed:0 l
+          if List.length l < Conf.entries_per_level then of_values ~seed:0 l
           else
             let aux acc (s, v) =
               add ~seed:0
@@ -1360,62 +1399,78 @@ struct
         let add ~find t s v = add ~seed:0 ~find ~copy:true t s v (fun x -> x)
 
         let to_bin t =
+          assert (Array.length t.entries <= Conf.entries_per_level);
           let rec aux t k =
             let entries =
               Array.fold_left
                 (fun acc -> function Empty -> acc
                   | Values vs -> List.map (fun v -> Bin.Value v) vs @ acc
-                  | Inode { index; hash = Some hash; _ } ->
-                      Inode (index, hash) :: acc
-                  | Inode ({ index; tree = Some t; _ } as inode) ->
+                  | Inode { index; length; hash = Some hash; _ } ->
+                      Inode { Bin.index; hash; length } :: acc
+                  | Inode ({ index; tree = Some t; length; _ } as inode) ->
                       aux t @@ fun bin ->
                       let hash = H_bin.hash bin in
                       inode.hash <- Some hash;
-                      Bin.Inode (index, hash) :: acc
+                      Bin.Inode { Bin.index; hash; length } :: acc
                   | Inode { tree = None; hash = None; _ } -> assert false )
                 [] t.entries
             in
-            let bin = List.sort Bin.compare entries in
-            k bin
+            k entries
           in
           aux t (fun x -> x)
 
         let of_bin t =
-          let entries = Array.make Conf.entries Empty in
+          assert (List.length t <= Conf.entries_per_level);
+          let entries = Array.make Conf.entries_per_level Empty in
+          let n = ref 0 in
           List.iteri
             (fun i -> function
               | Bin.Value v -> (
-                match entries.(i) with
-                | Empty -> entries.(i) <- Values [ v ]
-                | Values vs -> entries.(i) <- Values (v :: vs)
-                | Inode _ -> assert false )
-              | Inode (index, hash) ->
-                  let inode = { index; hash = Some hash; tree = None } in
+                  Fmt.epr "XXX e\n%!";
+                  match entries.(i) with
+                  | Empty ->
+                      n := !n + 1;
+                      entries.(i) <- Values [ v ]
+                  | Values vs ->
+                      n := !n + List.length vs;
+                      entries.(i) <- Values (v :: vs)
+                  | Inode _ -> assert false )
+              | Inode { index; length; hash } ->
+                  n := !n + length;
+                  let inode =
+                    { index; hash = Some hash; tree = None; length }
+                  in
                   entries.(i) <- Inode inode )
             t;
-          { length = List.length t; entries }
+          { cardinal = !n; entries }
 
         let ignore_hash (_ : H.t) = ()
 
         let save ?hash ~add ~find t =
           let rec aux : type a. seed:_ -> _ -> (_ -> a) -> a =
            fun ~seed t k ->
-            if t.length <= Conf.entries then k (to_bin t)
+            Log.debug (fun l -> l "save lenght:%d seed:%d" t.cardinal seed);
+            if t.cardinal <= Conf.entries_per_level then k (to_bin t)
             else (
               Array.iteri
                 (fun i -> function
                   | Empty | Inode { tree = None; _ } | Values [ _ ] -> ()
                   | Inode ({ tree = Some t; _ } as i) ->
                       aux ~seed:(seed + 1) t @@ fun bin ->
-                      let hash = H_bin.hash bin in
+                      let t = of_bin bin in
+                      let hash = H_t.hash t in
                       i.hash <- Some hash;
                       ignore_hash (add (H_bin.hash bin) bin)
                   | Values vs ->
                       let seed = seed + 1 in
                       let t = of_values ~seed (List.map value_of_v vs) in
                       aux ~seed t @@ fun bin ->
-                      let hash = H_bin.hash bin in
-                      let n = inode ~hash ~tree:t i in
+                      let t = of_bin bin in
+                      let hash = H_t.hash t in
+                      let n =
+                        inode ~hash ~tree:t ~length:t.cardinal ~index:i ()
+                      in
+                      Fmt.epr "XXX f\n%!";
                       t.entries.(i) <- Inode n;
                       ignore_hash (add hash bin) )
                 t.entries;
@@ -1425,7 +1480,7 @@ struct
               match hash with
               | Some h -> add h bin
               | None ->
-                  if t.length <= Conf.stable_hash_limit then
+                  if t.cardinal <= Conf.stable_hash_limit then
                     let values = list ~find t in
                     let hash = H_node.hash (Node.v values) in
                     add hash bin
@@ -1439,10 +1494,12 @@ struct
 
         type address = Indirect of int64 | Direct of H.t
 
+        type inode = { index : int; length : int; hash : address }
+
         type entry =
           | Contents of name * address * M.t
           | Node of name * address
-          | Inode of int * address
+          | Inode of inode
 
         let entry : entry Irmin.Type.t =
           let open Irmin.Type in
@@ -1460,10 +1517,12 @@ struct
             -> function
             | Contents (Indirect n, Indirect h, m) -> contents_ii (n, h, m)
             | Node (Indirect n, Indirect h) -> node_ii (n, h)
-            | Inode (n, Indirect h) -> inode_i (n, h)
+            | Inode { index; length; hash = Indirect h } ->
+                inode_i (index, length, h)
             | Contents (Indirect n, Direct h, m) -> contents_id (n, h, m)
             | Node (Indirect n, Direct h) -> node_id (n, h)
-            | Inode (n, Direct h) -> inode_d (n, h)
+            | Inode { index; length; hash = Direct h } ->
+                inode_d (index, length, h)
             | Contents (Direct n, Indirect h, m) -> contents_di (n, h, m)
             | Node (Direct n, Indirect h) -> node_di (n, h)
             | Contents (Direct n, Direct h, m) -> contents_dd (n, h, m)
@@ -1472,13 +1531,14 @@ struct
                  Contents (Indirect n, Indirect i, m) )
           |~ case1 "node-ii" (pair int int64) (fun (n, i) ->
                  Node (Indirect n, Indirect i) )
-          |~ case1 "inode-i" (pair int int64) (fun (n, i) ->
-                 Inode (n, Indirect i) )
+          |~ case1 "inode-i" (triple int int int64) (fun (index, length, i) ->
+                 Inode { index; length; hash = Indirect i } )
           |~ case1 "contents-id" (triple int H.t M.t) (fun (n, h, m) ->
                  Contents (Indirect n, Direct h, m) )
           |~ case1 "node-id" (pair int H.t) (fun (n, h) ->
                  Node (Indirect n, Direct h) )
-          |~ case1 "inode-d" (pair int H.t) (fun (n, h) -> Inode (n, Direct h))
+          |~ case1 "inode-d" (triple int int H.t) (fun (index, length, h) ->
+                 Inode { index; length; hash = Direct h } )
           |~ case1 "contents-di" (triple P.step_t int64 M.t) (fun (n, i, m) ->
                  Contents (Direct n, Indirect i, m) )
           |~ case1 "node-di" (pair P.step_t int64) (fun (n, i) ->
@@ -1523,9 +1583,9 @@ struct
                 let s = step n.name in
                 let v = hash n.node in
                 Compress.Node (s, v)
-            | Inode (index, h) ->
-                let v = hash h in
-                Compress.Inode (index, v)
+            | Inode { index; length; hash = h; _ } ->
+                let hash = hash h in
+                Compress.Inode { index; length; hash }
           in
           (* List.map is fine here as the number of entries is small *)
           let v = List.map inode (snd t.v) in
@@ -1559,9 +1619,9 @@ struct
                 let name = step n in
                 let node = hash h in
                 Value (Node { name; node })
-            | Inode (index, h) ->
-                let node = hash h in
-                Inode (index, node)
+            | Inode { index; hash = h; length } ->
+                let hash = hash h in
+                Inode { index; hash; length }
           in
           let v = (i.hash, List.map inode i.v) in
           { magic; hash = i.hash; v }
@@ -1595,9 +1655,13 @@ struct
 
           let find t s = I.find ~find:t.find t.v s
 
-          let add t s v = { find = t.find; v = I.add ~find:t.find t.v s v }
+          let add t s v =
+            let v = I.add ~find:t.find t.v s v in
+            if v == t.v then t else { find = t.find; v }
 
-          let remove t s = { find = t.find; v = I.remove ~find:t.find t.v s }
+          let remove t s =
+            let v = I.remove ~find:t.find t.v s in
+            if v == t.v then t else { find = t.find; v }
 
           let hash_t = I.hash_t
 
@@ -1609,8 +1673,18 @@ struct
 
           let default = I.default
 
+          let pre_hash t =
+            if t.v.cardinal <= Conf.stable_hash_limit then (
+              Fmt.epr "XXX 0\n%!";
+              Irmin.Type.pre_hash Node.t (Node.v (I.list ~find:t.find t.v)) )
+            else (
+              Fmt.epr "XXX 1\n%!";
+              Irmin.Type.pre_hash I.t t.v )
+
           let t : t Irmin.Type.t =
-            Irmin.Type.map I.t (fun v -> { find = niet; v }) (fun t -> t.v)
+            Irmin.Type.map ~pre_hash I.t
+              (fun v -> { find = niet; v })
+              (fun t -> t.v)
         end
 
         module Key = H
@@ -1643,7 +1717,9 @@ struct
           in
           Inode.Val.save ?hash ~add ~find:(unsafe_find t) v
 
-        let add t v = Lwt.return (save t v.Val.v)
+        let add t v =
+          Fmt.epr "XXX add\n%!";
+          Lwt.return (save t v.Val.v)
 
         let unsafe_add t k v =
           Inode.Val.ignore_hash (save ~hash:k t v.Val.v);
@@ -1737,6 +1813,7 @@ module Path = Irmin.Path.String_list
 module Metadata = Irmin.Metadata.None
 
 module Make
+    (Conf : CONFIG)
     (M : Irmin.Metadata.S)
     (C : Irmin.Contents.S)
     (P : Irmin.Path.S)
@@ -1745,11 +1822,11 @@ module Make
 struct
   module XNode = Irmin.Private.Node.Make (H) (P) (M)
   module XCommit = Irmin.Private.Commit.Make (H)
-  include Make_ext (M) (C) (P) (B) (H) (XNode) (XCommit)
+  include Make_ext (Conf) (M) (C) (P) (B) (H) (XNode) (XCommit)
 end
 
-module KV (C : Irmin.Contents.S) =
-  Make (Metadata) (C) (Path) (Irmin.Branch.String) (Hash)
+module KV (Conf : CONFIG) (C : Irmin.Contents.S) =
+  Make (Conf) (Metadata) (C) (Path) (Irmin.Branch.String) (Hash)
 
 let div_or_zero a b = if b = 0 then 0. else float_of_int a /. float_of_int b
 
