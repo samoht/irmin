@@ -242,14 +242,15 @@ module Make (S : S) = struct
       let l = P.Node.Val.list u in
       check
         Irmin.Type.(list (pair P.Node.Path.step_t P.Node.Val.value_t))
-        "list" l
-        [ ("z", k); ("x", k); ("y", k) ];
+        "list"
+        [ ("x", k); ("y", k); ("z", k) ] l;
       let u = P.Node.Val.add u "a" k in
       check_node "node: x+y+z+a" u >>= fun () ->
       let u = P.Node.Val.add u "b" k in
+      Fmt.epr "XXX 0 %a\n%!" (Irmin.Type.pp P.Node.Val.t) u;
       check_node "node: x+y+z+a+b" u >>= fun () ->
       let h = H_node.hash u in
-      Fmt.epr "XXX %a\n%!" (Irmin.Type.pp P.Node.Val.t) u;
+      Fmt.epr "XXX 1 %a\n%!" (Irmin.Type.pp P.Node.Val.t) u;
       with_node repo (fun n -> P.Node.add n u) >>= fun k ->
       check_key "hash(v) = add(v)" h k;
       P.Node.find n k >>= fun w ->
