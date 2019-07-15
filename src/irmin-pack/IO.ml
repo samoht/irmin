@@ -25,6 +25,8 @@ module type S = sig
 
   val v : version:string -> readonly:bool -> string -> t
 
+  val name : t -> string
+
   val clear : t -> unit
 
   val append : t -> string -> unit
@@ -34,6 +36,10 @@ module type S = sig
   val read : t -> off:int64 -> bytes -> int
 
   val offset : t -> int64
+
+  val force_offset : t -> int64
+
+  val readonly : t -> bool
 
   val version : t -> string
 
@@ -114,13 +120,17 @@ module Unix : S = struct
     mutable raw : Raw.t;
     mutable offset : int64;
     mutable flushed : int64;
+    readonly : bool;
     version : string;
     buf : Buffer.t
   }
 
+  let name t = t.file
+
   let header = 16L (* offset + version *)
 
   let sync t =
+    if t.readonly then raise RO_Not_Allowed;
     Log.debug (fun l -> l "IO sync %s" t.file);
     let buf = Buffer.contents t.buf in
     let offset = t.offset in
@@ -146,6 +156,7 @@ module Unix : S = struct
     if t.offset -- t.flushed > auto_flush_limit then sync t
 
   let set t ~off buf =
+    if t.readonly then raise RO_Not_Allowed;
     sync t;
     Raw.unsafe_write t.raw ~off:(header ++ off) buf;
     let len = Int64.of_int (String.length buf) in
@@ -153,12 +164,18 @@ module Unix : S = struct
     assert (off <= t.flushed)
 
   let read t ~off buf =
-    assert (header ++ off <= t.flushed);
+    if not t.readonly then assert (header ++ off <= t.flushed);
     Raw.unsafe_read t.raw ~off:(header ++ off) ~len:(Bytes.length buf) buf
 
   let offset t = t.offset
 
+  let force_offset t =
+    t.offset <- Raw.unsafe_get_offset t.raw;
+    t.offset
+
   let version t = t.version
+
+  let readonly t = t.readonly
 
   let protect_unix_exn = function
     | Unix.Unix_error _ as e -> failwith (Printexc.to_string e)
@@ -207,6 +224,7 @@ module Unix : S = struct
         file;
         offset;
         raw;
+        readonly;
         buf = buffer file;
         flushed = header ++ offset
       }
@@ -229,3 +247,38 @@ module Unix : S = struct
         assert (version = current_version);
         v ~offset ~version raw
 end
+
+let ( // ) = Filename.concat
+
+let with_cache ~v ~clear file =
+  let files = Hashtbl.create 13 in
+  fun ?(fresh = false) ?(shared = true) ?(readonly = false) root ->
+    let file = root // file in
+    if fresh && readonly then raise RO_Not_Allowed;
+    if not shared then (
+      Log.debug (fun l ->
+          l "[%s] v fresh=%b shared=%b readonly=%b" (Filename.basename file)
+            fresh shared readonly );
+      let t = v ~fresh ~readonly file in
+      if fresh then clear t;
+      t )
+    else
+      try
+        if not (Sys.file_exists file) then (
+          Log.debug (fun l ->
+              l "[%s] does not exist anymore, cleaning up the fd cache"
+                (Filename.basename file) );
+          Hashtbl.remove files file;
+          raise Not_found );
+        let t = Hashtbl.find files file in
+        Log.debug (fun l -> l "%s found in cache" file);
+        if fresh then clear t;
+        t
+      with Not_found ->
+        Log.debug (fun l ->
+            l "[%s] v fresh=%b shared=%b readonly=%b" (Filename.basename file)
+              fresh shared readonly );
+        let t = v ~fresh ~readonly file in
+        if fresh then clear t;
+        Hashtbl.add files file t;
+        t
