@@ -123,33 +123,28 @@ module type S = sig
     (** [import t s] imports the contents of the slice [s] in [t]. Does not
         modify branches. *)
 
-    val iter_nodes :
+    type elt = [ `Commit of hash | `Node of hash | `Contents of hash * metadata ]
+    [@@deriving irmin]
+
+    val iter :
       t ->
-      min:hash list ->
-      max:hash list ->
+      min:elt list ->
+      max:elt list ->
+      ?edge:(elt -> elt -> unit Lwt.t) ->
+      ?commit:(hash -> unit Lwt.t) ->
       ?node:(hash -> unit Lwt.t) ->
-      ?contents:(hash * metadata -> unit Lwt.t) ->
-      ?edge:(hash -> hash -> unit Lwt.t) ->
+      ?contents:(hash -> metadata -> unit Lwt.t) ->
+      ?skip_commits:(hash -> bool Lwt.t) ->
       ?skip_nodes:(hash -> bool Lwt.t) ->
-      ?skip_contents:(hash * metadata -> bool Lwt.t) ->
+      ?skip_contents:(hash -> metadata -> bool Lwt.t) ->
+      ?pred_commit:(t -> hash -> elt list Lwt.t) ->
+      ?pred_node:(t -> hash -> elt list Lwt.t) ->
+      ?pred_contents:(t -> hash -> metadata -> elt list Lwt.t) ->
       ?rev:bool ->
       unit ->
       unit Lwt.t
     (** [iter t] iterates in reverse topological order over the closure graph of
-        [t] as specified by {{!Irmin__.S.NODE_GRAPH.iter} NODE_GRAPH.iter}. *)
-
-    val iter_commits :
-      t ->
-      min:hash list ->
-      max:hash list ->
-      ?commit:(hash -> unit Lwt.t) ->
-      ?edge:(hash -> hash -> unit Lwt.t) ->
-      ?skip:(hash -> bool Lwt.t) ->
-      ?rev:bool ->
-      unit ->
-      unit Lwt.t
-    (** [iter t] iterates over the closure graph of [t] as specified by
-        {{!Irmin__.S.COMMIT_HISTORY.iter} COMMIT_HISTORY.iter}. *)
+        [t]. *)
   end
 
   val empty : repo -> t Lwt.t

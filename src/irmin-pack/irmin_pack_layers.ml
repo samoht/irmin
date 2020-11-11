@@ -615,95 +615,64 @@ struct
           true
       | false -> false
 
-    let copy_tree ~skip_nodes ~skip_contents nodes contents t root =
+    let no_skip _ = Lwt.return false
+
+    let iter_copy (contents, nodes, commits) ?(skip_commits = no_skip)
+        ?(skip_nodes = no_skip) ?(skip_contents = no_skip) t ?(min = []) cs =
       (* if node or contents are already in dst then they are skipped by
          Graph.iter; there is no need to check this again when the object is
          copied *)
-      let node k =
-        pause () >>= fun () -> X.Node.CA.copy nodes t.X.Repo.node k >>= pause
-      in
-      let contents (k, _) =
+      let commit k = X.Commit.CA.copy commits t.X.Repo.commit "Commit" k in
+      let node k = X.Node.CA.copy nodes t.X.Repo.node k in
+      let contents k _ =
         X.Contents.CA.copy contents t.X.Repo.contents "Contents" k
       in
       let skip_nodes h = skip_with_stats ~skip:skip_nodes h in
-      let skip_contents h = skip_with_stats ~skip:skip_contents h in
-      Repo.iter_nodes t ~min:[] ~max:[ root ] ~node ~contents ~skip_nodes
-        ~skip_contents ()
-
-    let copy_commit ~skip_nodes ~skip_contents contents nodes commits t k =
-      let aux c =
-        copy_tree ~skip_nodes ~skip_contents nodes contents t
-          (X.Commit.Val.node c)
-      in
-      X.Commit.CA.copy commits t.X.Repo.commit ~aux "Commit" k
+      let skip_contents h _ = skip_with_stats ~skip:skip_contents h in
+      let skip_commits h = skip_with_stats ~skip:skip_commits h in
+      let max = List.map (fun c -> `Commit c) cs in
+      let min = List.map (fun c -> `Commit c) min in
+      Repo.iter t ~min ~max ~commit ~node ~contents ~skip_nodes ~skip_contents
+        ~skip_commits ()
 
     module CopyToLower = struct
       let on_lower t f =
-        let contents = X.Contents.CA.lower t.X.Repo.contents in
-        let nodes = X.Node.CA.lower t.X.Repo.node in
-        let commits = X.Commit.CA.lower t.X.Repo.commit in
-        f contents nodes commits
+        let contents =
+          (X.Contents.CA.Lower, X.Contents.CA.lower t.X.Repo.contents)
+        in
+        let nodes = (X.Node.CA.Lower, X.Node.CA.lower t.X.Repo.node) in
+        let commits = (X.Commit.CA.Lower, X.Commit.CA.lower t.X.Repo.commit) in
+        f (contents, nodes, commits)
 
-      let copy_commit contents nodes commits t =
-        copy_commit ~skip_nodes:(mem_node_lower t)
-          ~skip_contents:(fun (k, _) -> mem_contents_lower t k)
-          (X.Contents.CA.Lower, contents)
-          (X.Node.CA.Lower, nodes)
-          (X.Commit.CA.Lower, commits)
-          t
-
-      let copy_max_commits ~max t =
+      let copy ?(min = []) t commits =
         Log.debug (fun f -> f "copy max commits to lower");
-        Lwt_list.iter_s
-          (fun k ->
-            let h = Commit.hash k in
-            on_lower t (fun contents nodes commits ->
-                mem_commit_lower t h >>= function
-                | true -> Lwt.return_unit
-                | false -> copy_commit contents nodes commits t h))
-          max
-
-      let copy ~min ~max t =
-        let max = List.map (fun x -> Commit.hash x) max in
+        let max = List.map Commit.hash commits in
         let min = List.map (fun x -> Commit.hash x) min in
-        let skip h = skip_with_stats ~skip:(mem_commit_lower t) h in
-        on_lower t (fun contents nodes commits ->
-            let commit = copy_commit contents nodes commits t in
-            Repo.iter_commits t ~min ~max ~commit ~skip ())
+        on_lower t (fun l ->
+            iter_copy l ~skip_commits:(mem_commit_lower t)
+              ~skip_nodes:(mem_node_lower t)
+              ~skip_contents:(mem_contents_lower t) t ~min max)
     end
 
     module CopyToUpper = struct
       let on_next_upper t f =
-        let contents = X.Contents.CA.next_upper t.X.Repo.contents in
-        let nodes = X.Node.CA.next_upper t.X.Repo.node in
-        let commits = X.Commit.CA.next_upper t.X.Repo.commit in
-        f contents nodes commits
-
-      let copy_commit contents nodes commits t =
-        copy_commit ~skip_nodes:(mem_node_next t)
-          ~skip_contents:(fun (k, _) -> mem_contents_next t k)
-          (X.Contents.CA.Upper, contents)
-          (X.Node.CA.Upper, nodes)
-          (X.Commit.CA.Upper, commits)
-          t
-
-      let copy ~min ~max t =
-        let skip h = skip_with_stats ~skip:(mem_commit_next t) h in
-        on_next_upper t (fun contents nodes commits ->
-            let commit = copy_commit contents nodes commits t in
-            Repo.iter_commits t ~min ~max ~commit ~skip ())
-
-      let copy_commits ~min ~max t =
-        Log.debug (fun f ->
-            f "copy commits to next upper %s" (X.Repo.log_current_upper t));
-        let max = List.map (fun x -> Commit.hash x) max in
-        (* if min is empty then copy only the max commits *)
-        let min =
-          match min with
-          | [] -> max
-          | min -> List.map (fun x -> Commit.hash x) min
+        let contents =
+          (X.Contents.CA.Upper, X.Contents.CA.next_upper t.X.Repo.contents)
         in
-        copy ~min ~max t
+        let nodes = (X.Node.CA.Upper, X.Node.CA.next_upper t.X.Repo.node) in
+        let commits =
+          (X.Commit.CA.Upper, X.Commit.CA.next_upper t.X.Repo.commit)
+        in
+        f (contents, nodes, commits)
+
+      let copy ?(min = []) t commits =
+        Log.debug (fun f -> f "copy max commits to lower");
+        let max = List.map Commit.hash commits in
+        let min = List.map (fun x -> Commit.hash x) min in
+        on_next_upper t (fun u ->
+            iter_copy u ~skip_commits:(mem_commit_next t)
+              ~skip_nodes:(mem_node_next t) ~skip_contents:(mem_contents_next t)
+              ~min t max)
 
       let includes commits k =
         List.exists (fun k' -> Irmin.Type.equal Hash.t k k') commits
@@ -714,25 +683,30 @@ struct
           if includes min x then ok := true;
           Lwt.return_unit
         in
-        Repo.iter_commits t ~min ~max:[ head ] ~commit () >|= fun () -> !ok
+        Repo.iter t
+          ~skip_nodes:(fun _ -> Lwt.return true)
+          ~skip_contents:(fun _ _ -> Lwt.return true)
+          ~min:(List.map (fun x -> `Commit x) min)
+          ~max:[ `Commit head ] ~commit ()
+        >|= fun () -> !ok
 
       (** Copy the heads that include a max commit *)
       let copy_heads ~max ~heads t =
         Log.debug (fun f ->
             f "copy heads to current %s" (X.Repo.log_current_upper t));
-        let max = List.map (fun x -> Commit.hash x) max in
-        let heads = List.map (fun x -> Commit.hash x) heads in
+        let max_hashes = List.map (fun x -> Commit.hash x) max in
         Lwt_list.fold_left_s
           (fun acc head ->
+            let head_hash = Commit.hash head in
             (*if a head is a max commit then already copied*)
-            if includes max head then Lwt.return acc
+            if includes max_hashes head_hash then Lwt.return acc
             else
               (*if a head is after the max commit then copy it*)
-              non_empty_intersection t max head >|= function
+              non_empty_intersection t max_hashes head_hash >|= function
               | true -> head :: acc
               | false -> acc)
           [] heads
-        >>= fun heads -> copy ~min:max ~max:heads t
+        >>= fun heads -> copy ~min:max t heads
 
       (** Newies are the objects added in current upper during the freeze. They
           are copied to the next upper before the freeze ends. When copying the
@@ -764,49 +738,21 @@ struct
             |> Lwt.return
           else X.Contents.CA.consume_newies t.X.Repo.contents >|= List.rev
         in
-        let copy_contents contents t k =
-          X.Contents.CA.copy contents t.X.Repo.contents "Contents" k
-        in
-        let copy_tree contents nodes t k =
-          let skip_nodes k = mem_node_next t k in
-          let skip_contents (k, _) = mem_contents_next t k in
-          copy_tree ~skip_nodes ~skip_contents nodes contents t k
-        in
-        let copy_commit contents nodes commits t k =
+        newies_commits >>= fun newies_commits ->
+        newies_nodes >>= fun newies_nodes ->
+        newies_contents >>= fun newies_contents ->
+        let newies = newies_commits @ newies_nodes @ newies_contents in
+        (* we want to copy all the new commits; stop whenever one
+           commmit already in the other upper or in lower. *)
+        let skip_commits k =
           mem_commit_next t k >>= function
-          | true -> Lwt.return_unit
-          | false ->
-              let aux c = copy_tree contents nodes t (X.Commit.Val.node c) in
-              X.Commit.CA.copy commits t.X.Repo.commit ~aux "Commit" k
+          | true -> Lwt.return true
+          | false -> mem_commit_lower t k
         in
-        let iter ~mem_next ~copy t objs =
-          let rec aux objs =
-            Lwt_list.filter_s (fun k -> mem_next t k >|= not) objs >>= function
-            | [] -> Lwt.return_unit
-            | objs ->
-                Lwt_list.find_s (fun k -> mem_next t k >|= not) objs
-                >>= fun obj ->
-                copy t obj >>= fun () -> (aux objs [@tail])
-          in
-          aux objs
-        in
-        on_next_upper t (fun contents nodes commits ->
-            let contents = (X.Contents.CA.Upper, contents) in
-            let nodes = (X.Node.CA.Upper, nodes) in
-            let commits = (X.Commit.CA.Upper, commits) in
-            Log.debug (fun l -> l "copy newies: iter commits");
-            newies_commits
-            >>= Lwt_list.iter_s (fun k ->
-                    copy_commit contents nodes commits t k)
-            >>= fun () ->
-            Log.debug (fun l -> l "copy newies: iter nodes");
-            newies_nodes
-            >>= iter ~mem_next:mem_node_next ~copy:(copy_tree contents nodes) t
-            >>= fun () ->
-            Log.debug (fun l -> l "copy newies: iter contents");
-            newies_contents
-            >>= iter ~mem_next:mem_contents_next ~copy:(copy_contents contents)
-                  t)
+        Log.debug (fun l -> l "copy newies");
+        on_next_upper t (fun u ->
+            iter_copy u ~skip_commits ~skip_nodes:(mem_node_next t)
+              ~skip_contents:(mem_contents_next t) t newies)
         >>= fun () ->
         if with_lock then X.Branch.copy_last_newies_to_next_upper t.branch
         else X.Branch.copy_newies_to_next_upper t.branch
@@ -827,36 +773,33 @@ struct
     end
 
     module CopyFromLower = struct
+      (* FIXME(samoht): copy/paste from iter_copy with s/copy/copy_from_lower *)
+      let iter_copy (contents, nodes, commits) ?(skip_commits = no_skip)
+          ?(skip_nodes = no_skip) ?(skip_contents = no_skip) t ?(min = []) cs =
+        (* if node or contents are already in dst then they are skipped by
+           Graph.iter; there is no need to check this again when the object is
+           copied *)
+        let commit k =
+          X.Commit.CA.copy_from_lower ~dst:commits t.X.Repo.commit "Commit" k
+        in
+        let node k = X.Node.CA.copy_from_lower ~dst:nodes t.X.Repo.node k in
+        let contents k _ =
+          X.Contents.CA.copy_from_lower ~dst:contents t.X.Repo.contents
+            "Contents" k
+        in
+        let skip_nodes h = skip_with_stats ~skip:skip_nodes h in
+        let skip_contents h _ = skip_with_stats ~skip:skip_contents h in
+        let skip_commits h = skip_with_stats ~skip:skip_commits h in
+        let max = List.map (fun c -> `Commit c) cs in
+        let min = List.map (fun c -> `Commit c) min in
+        Repo.iter t ~min ~max ~commit ~node ~contents ~skip_nodes ~skip_contents
+          ~skip_commits ()
+
       let on_current_upper t f =
         let contents = X.Contents.CA.current_upper t.X.Repo.contents in
         let nodes = X.Node.CA.current_upper t.X.Repo.node in
         let commits = X.Commit.CA.current_upper t.X.Repo.commit in
-        f contents nodes commits
-
-      let copy_tree contents nodes t root =
-        let node k =
-          X.Node.CA.copy_from_lower ~dst:nodes t.X.Repo.node k >|= fun () ->
-          (* We have to ensure that a node is entirely flushed to disk.
-             If we rely on the implicit flush of io, it could be that
-             only a part of a node if flushed to disk when RO tries to
-             read it. *)
-          X.Node.CA.flush t.node
-        in
-        let contents (k, _) =
-          X.Contents.CA.copy_from_lower ~dst:contents t.X.Repo.contents
-            "Contents" k
-        in
-        (* We cannot skip nodes, because a node in upper can have a predecessor
-           in lower. Contents do not have predecessors, so we can skip them. *)
-        let skip_contents (k, _) = mem_contents_next t k in
-        Repo.iter_nodes t ~min:[] ~max:[ root ] ~node ~contents ~skip_contents
-          ()
-
-      let copy_commit contents nodes commits t hash =
-        let aux c = copy_tree contents nodes t (X.Commit.Val.node c) in
-        X.Commit.CA.copy_from_lower t.X.Repo.commit ~dst:commits ~aux "Commit"
-          hash
-        >|= fun () -> X.Repo.flush t
+        f (contents, nodes, commits)
 
       (** The commits can be in either lower or upper. We don't skip an object
           already in upper as its predecessors could be in lower. *)
@@ -867,6 +810,8 @@ struct
           | None -> max (* if min is empty then copy only the max commits *)
           | Some min -> List.map (fun x -> Commit.hash x) min
         in
+        (* FIXME(samoht): do this in 2 steps: 1/ find the shallow
+           hashes in upper 2/ iterates with max=shallow *)
         Log.debug (fun l ->
             l
               "self_contained: copy commits min:%a; max:%a from lower into \
@@ -875,9 +820,7 @@ struct
               min
               (Fmt.list (Irmin.Type.pp H.t))
               max);
-        on_current_upper t (fun contents nodes commits ->
-            let commit h = copy_commit contents nodes commits t h in
-            Repo.iter_commits t ~min ~max ~commit ())
+        on_current_upper t (fun u -> iter_copy u ~min t max)
     end
   end
 
@@ -894,14 +837,15 @@ struct
     (* Copy commits to lower: if squash then copy only the max commits *)
     let with_lower = with_lower t.X.Repo.config in
     (if with_lower then
-     if squash then Copy.CopyToLower.copy_max_commits ~max t
-     else Copy.CopyToLower.copy ~min ~max t
+     let min = if squash then max else min in
+     Copy.CopyToLower.copy t ~min max
     else Lwt.return_unit)
     >>= fun () ->
     pp_stats "end of copied in lower";
     (* Copy [min_upper, max] and [max, heads] to next_upper *)
+    (* FIXME(samoht): not sure to understand why *)
     (if copy_in_upper then
-     Copy.CopyToUpper.copy_commits ~min:min_upper ~max t >>= fun () ->
+     Copy.CopyToUpper.copy ~min:min_upper t max >>= fun () ->
      Copy.CopyToUpper.copy_heads ~max ~heads t
     else Lwt.return_unit)
     >>= fun () ->

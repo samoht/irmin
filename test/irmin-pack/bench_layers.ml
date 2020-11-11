@@ -122,7 +122,9 @@ let large_dir path tree width =
       Store.Tree.add tree k (random_blob ()) >>= fun tree ->
       aux (i + 1) tree (Some k)
   in
-  aux 0 tree None >|= fun (path, tree) -> (Option.get path, tree)
+  aux 0 tree None >|= fun (path, tree) ->
+  if path = None then failwith "foo";
+  (Option.get path, tree)
 
 let add_large_tree tree =
   let path = key 5 in
