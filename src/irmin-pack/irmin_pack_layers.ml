@@ -634,6 +634,7 @@ struct
       let min = List.map (fun c -> `Commit c) min in
       Repo.iter t ~min ~max ~commit ~node ~contents ~skip_nodes ~skip_contents
         ~skip_commits ()
+      >|= fun () -> X.Repo.flush t
 
     module CopyToLower = struct
       let on_lower t f =
@@ -794,6 +795,7 @@ struct
         let min = List.map (fun c -> `Commit c) min in
         Repo.iter t ~min ~max ~commit ~node ~contents ~skip_nodes ~skip_contents
           ~skip_commits ()
+        >|= fun () -> X.Repo.flush t
 
       let on_current_upper t f =
         let contents = X.Contents.CA.current_upper t.X.Repo.contents in
