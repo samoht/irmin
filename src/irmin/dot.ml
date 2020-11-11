@@ -202,13 +202,8 @@ module Make (S : Store.S) = struct
             add_edge (`Branch r) [ `Style `Bold ] (`Commit k))
       bs
     >|= fun () ->
-    let map = function
-      | `Contents c -> `Contents (c, Node.Metadata.default)
-      | (`Commit _ | `Node _ | `Branch _) as k -> k
-    in
-    let vertex = Hashtbl.fold (fun k v acc -> (map k, v) :: acc) vertex [] in
-    let edges = List.map (fun (k, l, v) -> (map k, l, map v)) !edges in
-    fun ppf -> Graph.output ppf vertex edges name
+    let vertex = Hashtbl.fold (fun k v acc -> (k, v) :: acc) vertex [] in
+    fun ppf -> Graph.output ppf vertex !edges name
 
   let output_buffer t ?html ?depth ?full ~date buf =
     fprintf t ?depth ?full ?html ~date "graph" >|= fun fprintf ->

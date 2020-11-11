@@ -260,7 +260,7 @@ module Graph (S : S.NODE_STORE) = struct
 
   let edges t =
     List.rev_map
-      (function _, `Node n -> `Node n | _, `Contents c -> `Contents c)
+      (function _, `Node n -> `Node n | _, `Contents (c, _) -> `Contents c)
       (S.Val.list t)
 
   let pp_key = Type.pp S.Key.t
@@ -287,8 +287,6 @@ module Graph (S : S.NODE_STORE) = struct
   let iter t ~min ~max ?(node = ignore_lwt) ?(contents = ignore_lwt) ?edge
       ?(skip_nodes = fun _ -> Lwt.return_false)
       ?(skip_contents = fun _ -> Lwt.return_false) ?(rev = true) () =
-    Log.debug (fun f ->
-        f "iter on closure min=%a max=%a" pp_keys min pp_keys max);
     let min = List.rev_map (fun x -> `Node x) min in
     let max = List.rev_map (fun x -> `Node x) max in
     let node = function

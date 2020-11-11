@@ -18,7 +18,7 @@ include Inode_layers_intf
 open Lwt.Infix
 
 let src =
-  Logs.Src.create "irmin.pack.i.layers"
+  Logs.Src.create "irmin.layers.i"
     ~doc:"layered inodes for the irmin-pack backend"
 
 module Log = (val Logs.src_log src : Logs.LOG)

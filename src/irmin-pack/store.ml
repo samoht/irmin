@@ -1,6 +1,6 @@
 include Store_intf
 
-let src = Logs.Src.create "irmin.pack.commons" ~doc:"irmin-pack backend"
+let src = Logs.Src.create "irmin.pack" ~doc:"irmin-pack backend"
 
 module Log = (val Logs.src_log src : Logs.LOG)
 
@@ -293,7 +293,7 @@ let migrate config =
   |> List.partition (fun (_, _, v) -> v = current_version)
   |> function
   | migrated, [] ->
-      Log.app (fun l ->
+      Log.warn (fun l ->
           l "Store at %s is already in current version (%a)"
             (Config.root config) pp_version current_version);
       List.iter (fun (_, io, _) -> IO.close io) migrated

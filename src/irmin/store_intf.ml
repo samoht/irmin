@@ -123,7 +123,7 @@ module type S = sig
     (** [import t s] imports the contents of the slice [s] in [t]. Does not
         modify branches. *)
 
-    type elt = [ `Commit of hash | `Node of hash | `Contents of hash * metadata ]
+    type elt = [ `Commit of hash | `Node of hash | `Contents of hash ]
     [@@deriving irmin]
 
     val iter :
@@ -133,13 +133,13 @@ module type S = sig
       ?edge:(elt -> elt -> unit Lwt.t) ->
       ?commit:(hash -> unit Lwt.t) ->
       ?node:(hash -> unit Lwt.t) ->
-      ?contents:(hash -> metadata -> unit Lwt.t) ->
+      ?contents:(hash -> unit Lwt.t) ->
       ?skip_commits:(hash -> bool Lwt.t) ->
       ?skip_nodes:(hash -> bool Lwt.t) ->
-      ?skip_contents:(hash -> metadata -> bool Lwt.t) ->
+      ?skip_contents:(hash -> bool Lwt.t) ->
       ?pred_commit:(t -> hash -> elt list Lwt.t) ->
       ?pred_node:(t -> hash -> elt list Lwt.t) ->
-      ?pred_contents:(t -> hash -> metadata -> elt list Lwt.t) ->
+      ?pred_contents:(t -> hash -> elt list Lwt.t) ->
       ?rev:bool ->
       unit ->
       unit Lwt.t
