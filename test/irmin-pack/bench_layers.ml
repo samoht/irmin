@@ -97,7 +97,9 @@ let init config =
   rm_dir config.root;
   Fmt_tty.setup_std_outputs ();
   Logs.set_level (Some Logs.App);
-  if !verbose then Logs.set_reporter (reporter ());
+  if !verbose then (
+    Logs.set_reporter (reporter ());
+    Logs.set_level (Some Logs.Debug));
   reset_stats ()
 
 let info () =
@@ -184,7 +186,6 @@ let pp_commit_stats c i time =
     Logs.app (fun l ->
         l "Commit %a %d in cycle completed in %f; objects created = %d"
           Store.Commit.pp_hash c i time num_objects)
-  else Fmt.epr "%f\n%!" time
 
 let print_stats () =
   let t = Irmin_layers.Stats.get () in
@@ -254,8 +255,7 @@ let run_cycles config repo head =
       with_timer (fun () -> freeze ~min_upper:[ min ] ~max:[ max ] config repo)
       >>= fun (time, ()) ->
       if !verbose then
-        Logs.app (fun l -> l "call to freeze completed in %f" time)
-      else Fmt.epr "%f\n%!" time;
+        Logs.app (fun l -> l "call to freeze completed in %f" time);
       run_one_cycle max (i + 1)
   in
   run_one_cycle head 0

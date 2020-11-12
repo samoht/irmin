@@ -102,13 +102,19 @@ struct
 
     let compare = Type.compare t
 
+    let short_contents_hash = Type.short_hash Contents.t ?seed:None
+
+    let short_node_hash = Type.short_hash Node.t ?seed:None
+
+    let short_commit_hash = Type.short_hash Commit.t ?seed:None
+
     (* we are using cryptographic hashes here, so the first bytes
        are good enough to be used as short hashes. *)
     let hash (t : t) : int =
       match t with
-      | `Contents c -> Type.short_hash Contents.t c
-      | `Node n -> Type.short_hash Node.t n
-      | `Commit c -> Type.short_hash Commit.t c
+      | `Contents c -> short_contents_hash c
+      | `Node n -> short_node_hash n
+      | `Commit c -> short_commit_hash c
       | `Branch b -> Type.short_hash Branch.t b
   end
 

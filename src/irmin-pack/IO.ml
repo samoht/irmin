@@ -141,7 +141,7 @@ module Unix : S = struct
   let append t buf =
     Buffer.add_string t.buf buf;
     let len = Int64.of_int (String.length buf) in
-    t.offset <- t.offset ++ len;
+    t.offset <- Int64.add t.offset len;
     if t.offset -- t.flushed > auto_flush_limit then flush t
 
   let set t ~off buf =
