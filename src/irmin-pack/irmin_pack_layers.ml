@@ -621,6 +621,15 @@ struct
 
     let no_skip _ = Lwt.return false
 
+    let pred_node t k =
+      let n = snd (X.Repo.node_t t) in
+      X.Node.CA.find n k >|= function
+      | None -> []
+      | Some v ->
+          List.rev_map
+            (function `Inode x -> `Node x | (`Node _ | `Contents _) as x -> x)
+            (X.Node.CA.Val.pred v)
+
     let iter_copy (contents, nodes, commits) ?(skip_commits = no_skip)
         ?(skip_nodes = no_skip) ?(skip_contents = no_skip) t ?(min = []) max =
       (* if node or contents are already in dst then they are skipped by
@@ -635,7 +644,7 @@ struct
       let skip_contents h = skip_with_stats ~skip:skip_contents h in
       let skip_commits h = skip_with_stats ~skip:skip_commits h in
       Repo.iter t ~min ~max ~commit ~node ~contents ~skip_nodes ~skip_contents
-        ~skip_commits ()
+        ~pred_node ~skip_commits ()
       >|= fun () -> X.Repo.flush t
 
     module CopyToLower = struct
