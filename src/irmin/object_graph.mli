@@ -109,7 +109,7 @@ module Make
     (Branch : Type.S) :
   S
     with type V.t =
-          [ `Contents of Contents.t * Metadata.t
+          [ `Contents of Contents.t
           | `Node of Node.t
           | `Commit of Commit.t
           | `Branch of Branch.t ]

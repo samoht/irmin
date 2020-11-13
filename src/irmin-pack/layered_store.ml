@@ -14,7 +14,7 @@
  * OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
  *)
 
-let src = Logs.Src.create "irmin.layered" ~doc:"Irmin layered store"
+let src = Logs.Src.create "irmin.layers" ~doc:"Irmin layered store"
 
 module Log = (val Logs.src_log src : Logs.LOG)
 
@@ -39,18 +39,18 @@ module Copy
     (SRC : Pack.S with type key = Key.t)
     (DST : Pack.S with type key = SRC.key and type value = SRC.value) =
 struct
-  let copy ~src ~dst ?(aux = fun _ -> Lwt.return_unit) str k =
+  let copy ~src ~dst str k =
     Log.debug (fun l -> l "copy %s %a" str (Irmin.Type.pp Key.t) k);
-    SRC.find src k >>= function
+    match SRC.unsafe_find src k with
     | None ->
         Log.warn (fun l ->
             l "Attempt to copy %s %a not contained in upper." str
               (Irmin.Type.pp Key.t) k);
-        pause ()
+        Lwt.return_unit
     | Some v ->
-        aux v >>= pause >>= fun () ->
         stats str;
-        DST.unsafe_add dst k v
+        DST.unsafe_append dst k v;
+        Lwt.return_unit
 end
 
 module Content_addressable
@@ -74,6 +74,7 @@ struct
     uppers : [ `Read ] U.t * [ `Read ] U.t;
     freeze_lock : Lwt_mutex.t;
     add_lock : Lwt_mutex.t;
+    mutable newies : key list;
   }
 
   module U = U
@@ -81,33 +82,40 @@ struct
 
   let v upper1 upper0 lower ~flip ~freeze_lock ~add_lock =
     Log.debug (fun l -> l "v flip = %b" flip);
-    { lower; flip; uppers = (upper1, upper0); freeze_lock; add_lock }
+    {
+      lower;
+      flip;
+      uppers = (upper1, upper0);
+      freeze_lock;
+      add_lock;
+      newies = [];
+    }
 
   let next_upper t = if t.flip then snd t.uppers else fst t.uppers
 
   let current_upper t = if t.flip then fst t.uppers else snd t.uppers
 
-  let lower t = Option.get t.lower
+  let lower t =
+    if t.lower = None then failwith "lower";
+    Option.get t.lower
 
   let log_current_upper t = if t.flip then "upper1" else "upper0"
 
   let log_next_upper t = if t.flip then "upper0" else "upper1"
 
-  let mem_lower t k = Option.get t.lower |> fun lower -> L.mem lower k
+  let mem_lower t k =
+    match t.lower with None -> Lwt.return false | Some lower -> L.mem lower k
 
   let mem_next t k = U.mem (next_upper t) k
 
-  (** Objects added during a freeze *)
-  let newies : key list ref = ref []
-
-  let unsafe_consume_newies () =
-    let tmp = !newies in
-    newies := [];
+  let unsafe_consume_newies t =
+    let tmp = t.newies in
+    t.newies <- [];
     tmp
 
   let consume_newies t =
     Lwt_mutex.with_lock t.add_lock (fun () ->
-        let tmp = unsafe_consume_newies () in
+        let tmp = unsafe_consume_newies t in
         Lwt.return tmp)
 
   let add' t v =
@@ -117,7 +125,7 @@ struct
     U.add upper v >|= fun k ->
     if Lwt_mutex.is_locked t.freeze_lock then (
       Log.debug (fun l -> l "adds during freeze");
-      newies := k :: !newies);
+      t.newies <- k :: t.newies);
     k
 
   let add t v = Lwt_mutex.with_lock t.add_lock (fun () -> add' t v)
@@ -129,7 +137,7 @@ struct
     U.unsafe_add upper k v >|= fun () ->
     if Lwt_mutex.is_locked t.freeze_lock then (
       Log.debug (fun l -> l "adds during freeze");
-      newies := k :: !newies)
+      t.newies <- k :: t.newies)
 
   let unsafe_add t k v =
     Lwt_mutex.with_lock t.add_lock (fun () -> unsafe_add' t k v)
@@ -141,7 +149,7 @@ struct
     U.unsafe_append upper k v;
     if Lwt_mutex.is_locked t.freeze_lock then (
       Log.debug (fun l -> l "adds during freeze");
-      newies := k :: !newies)
+      t.newies <- k :: t.newies)
 
   let unsafe_append t k v =
     Lwt_mutex.with_lock t.add_lock (fun () ->
@@ -304,34 +312,28 @@ struct
     | Upper : [ `Read ] U.t layer_type
     | Lower : [ `Read ] L.t layer_type
 
-  let copy_to_lower t ~dst ?aux str k =
-    CopyLower.copy ~src:(current_upper t) ~dst ?aux str k
+  let copy_to_lower t ~dst str k =
+    CopyLower.copy ~src:(current_upper t) ~dst str k
 
-  let copy_to_next t ~dst ?aux str k =
-    CopyUpper.copy ~src:(current_upper t) ~dst ?aux str k
+  let copy_to_next t ~dst str k =
+    CopyUpper.copy ~src:(current_upper t) ~dst str k
 
   let copy :
-      type l.
-      l layer_type * l ->
-      [ `Read ] t ->
-      ?aux:(value -> unit Lwt.t) ->
-      string ->
-      key ->
-      unit Lwt.t =
+      type l. l layer_type * l -> [ `Read ] t -> string -> key -> unit Lwt.t =
    fun (ltype, dst) ->
     match ltype with Lower -> copy_to_lower ~dst | Upper -> copy_to_next ~dst
 
   (** The object [k] can be in either lower or upper. If already in upper then
       do not copy it. *)
-  let copy_from_lower t ~dst ?(aux = fun _ -> Lwt.return_unit) str k =
+  let copy_from_lower t ~dst str k =
+    (* FIXME(samoht): why does this function need to be different from the previous one? *)
     let lower = lower t in
     let current = current_upper t in
     U.find current k >>= function
-    | Some v -> aux v
+    | Some _ -> Lwt.return_unit
     | None -> (
         L.find lower k >>= function
         | Some v ->
-            aux v >>= fun () ->
             stats str;
             U.unsafe_add dst k v
         | None -> Fmt.failwith "%s %a not found" str (Irmin.Type.pp H.t) k)

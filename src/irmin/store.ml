@@ -332,9 +332,69 @@ module Make (P : S.PRIVATE) = struct
           | Import_error e -> Lwt.return (Error (`Msg e))
           | e -> Fmt.kstrf Lwt.fail_invalid_arg "impot error: %a" Fmt.exn e)
 
-    let iter_nodes t = Graph.iter (graph_t t)
+    type elt = [ `Commit of Hash.t | `Node of Hash.t | `Contents of Hash.t ]
+    [@@deriving irmin]
 
-    let iter_commits t = H.iter (history_t t)
+    let ignore_lwt _ = Lwt.return_unit
+
+    let return_false _ = Lwt.return false
+
+    let default_pred_contents _ _ = Lwt.return []
+
+    let default_pred_node t k =
+      P.Node.find (node_t t) k >|= function
+      | None -> []
+      | Some v ->
+          List.rev_map
+            (function
+              | _, `Node n -> `Node n | _, `Contents (c, _) -> `Contents c)
+            (P.Node.Val.list v)
+
+    let default_pred_commit t c =
+      P.Commit.find (commit_t t) c >|= function
+      | None ->
+          Log.debug (fun l -> l "%a: not found" (Type.pp Hash.t) c);
+          []
+      | Some c ->
+          let node = P.Commit.Val.node c in
+          let parents = P.Commit.Val.parents c in
+          [ `Node node ] @ List.map (fun k -> `Commit k) parents
+
+    let iter t ~min ~max ?edge ?(commit = ignore_lwt) ?(node = ignore_lwt)
+        ?(contents = ignore_lwt) ?(skip_commits = return_false)
+        ?(skip_nodes = return_false) ?(skip_contents = return_false)
+        ?(pred_commit = default_pred_commit) ?(pred_node = default_pred_node)
+        ?(pred_contents = default_pred_contents) ?(rev = true) () =
+      let node = function
+        | `Commit x -> commit x
+        | `Node x -> node x
+        | `Contents x -> contents x
+        | _ -> assert false
+      in
+      let skip = function
+        | `Commit x -> skip_commits x
+        | `Node x -> skip_nodes x
+        | `Contents x -> skip_contents x
+        | _ -> assert false
+      in
+      let pred = function
+        | `Commit x -> pred_commit t x
+        | `Node x -> pred_node t x
+        | `Contents x -> pred_contents t x
+        | _ -> assert false
+      in
+      let min = (min :> KGraph.vertex list)
+      and max = (max :> KGraph.vertex list)
+      and pred = (pred :> KGraph.vertex -> KGraph.vertex list Lwt.t) in
+      let edge =
+        Option.map
+          (fun edge x y ->
+            match (x, y) with
+            | `Branch _, _ | _, `Branch _ -> assert false
+            | (#elt as x), (#elt as y) -> edge x y)
+          edge
+      in
+      KGraph.iter ~pred ~min ~max ~node ?edge ~skip ~rev ()
   end
 
   type t = {

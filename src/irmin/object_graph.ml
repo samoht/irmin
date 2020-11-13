@@ -92,7 +92,7 @@ module Make
 struct
   module X = struct
     type t =
-      [ `Contents of Contents.t * Metadata.t
+      [ `Contents of Contents.t
       | `Node of Node.t
       | `Commit of Commit.t
       | `Branch of Branch.t ]
@@ -102,13 +102,19 @@ struct
 
     let compare = Type.compare t
 
+    let short_contents_hash = Type.short_hash Contents.t ?seed:None
+
+    let short_node_hash = Type.short_hash Node.t ?seed:None
+
+    let short_commit_hash = Type.short_hash Commit.t ?seed:None
+
     (* we are using cryptographic hashes here, so the first bytes
        are good enough to be used as short hashes. *)
     let hash (t : t) : int =
       match t with
-      | `Contents (c, _) -> Type.short_hash Contents.t c
-      | `Node n -> Type.short_hash Node.t n
-      | `Commit c -> Type.short_hash Commit.t c
+      | `Contents c -> short_contents_hash c
+      | `Node n -> short_node_hash n
+      | `Commit c -> short_commit_hash c
       | `Branch b -> Type.short_hash Branch.t b
   end
 
@@ -131,9 +137,12 @@ struct
 
   let edges g = G.fold_edges (fun k1 k2 list -> (k1, k2) :: list) g []
 
+  let pp_vertices = Fmt.Dump.list (Type.pp X.t)
+
   let iter ?(depth = max_int) ~pred ~min ~max ~node ?edge ~skip ~rev () =
     Log.debug (fun f ->
-        f "iter on closure depth=%d (%d elements)" depth (List.length max));
+        f "@<2>iter:@ depth=%d,@ rev=%b,@ min=%a,@ max=%a@]" depth rev
+          pp_vertices min pp_vertices max);
     let marks = Table.create 1024 in
     let mark key level = Table.add marks key level in
     let has_mark key = Table.mem marks key in
@@ -167,24 +176,31 @@ struct
           else
             skip key >>= function
             | true -> pop key level
-            | false ->
+            | false -> (
                 Log.debug (fun f -> f "VISIT %a %d" Type.(pp X.t) key level);
                 (if not rev then treat key else Lwt.return_unit) >>= fun () ->
                 mark key level;
-                if List.mem key min then visit ()
-                else
+                let push_pred ~filter_commits () =
                   pred key >>= fun keys ->
                   List.iter
-                    (fun k ->
-                      if not (has_mark k) then Stack.push (k, level + 1) todo)
+                    (function
+                      | `Commit _ when filter_commits -> ()
+                      | k ->
+                          if not (has_mark k) then
+                            Stack.push (k, level + 1) todo)
                     keys;
-                  visit ())
+                  visit ()
+                in
+                (* we want to iter over the nodes of min commits. *)
+                match key with
+                | `Commit _ -> push_pred ~filter_commits:(List.mem key min) ()
+                | _ ->
+                    if List.mem key min then visit ()
+                    else push_pred ~filter_commits:false ()))
     in
     visit ()
 
   let closure ?(depth = max_int) ~pred ~min ~max () =
-    Log.debug (fun f ->
-        f "closure depth=%d (%d elements)" depth (List.length max));
     let g = G.create ~size:1024 () in
     List.iter (G.add_vertex g) max;
     let node key =
@@ -227,7 +243,7 @@ struct
       | `Node n -> str Node.t n
       | `Commit c -> str Commit.t c
       | `Branch b -> str Branch.t b
-      | `Contents (c, _) -> str Contents.t c
+      | `Contents c -> str Contents.t c
 
     let vertex_attributes k = !vertex_attributes k
 
