@@ -592,7 +592,7 @@ struct
 
   let pp_commits = Fmt.Dump.list Commit.pp_hash
 
-  let pp_elts = Fmt.Dump.list (Irmin.Type.pp Repo.elt_t)
+  let _pp_elts = Fmt.Dump.list (Irmin.Type.pp Repo.elt_t)
 
   module Copy = struct
     let mem_commit_lower t = X.Commit.CA.mem_lower t.X.Repo.commit
@@ -762,12 +762,14 @@ struct
         newies_commits >>= fun newies_commits ->
         newies_nodes >>= fun newies_nodes ->
         newies_contents >>= fun newies_contents ->
+        let newies_commit = List.rev_map (fun x -> `Commit x) newies_commits in
+        let newies_nodes = List.rev_map (fun x -> `Node x) newies_nodes in
+        let newies_contents = List.map (fun x -> `Contents x) newies_contents in
         let newies =
-          List.rev_map (fun x -> `Commit x) newies_commits
-          @ List.rev_map (fun x -> `Node x) newies_nodes
-          @ List.rev_map (fun x -> `Contents x) newies_contents
+          let l1 = List.rev_append newies_nodes newies_contents in
+          List.rev_append newies_commit l1
         in
-        Log.debug (fun l -> l "copy newies: %a" pp_elts newies);
+        Log.debug (fun l -> l "copy newies");
         (* we want to copy all the new commits; stop whenever one
            commmit already in the other upper or in lower. *)
         let skip_commits k =

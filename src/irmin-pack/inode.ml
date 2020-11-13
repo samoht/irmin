@@ -587,7 +587,7 @@ struct
           if i = Array.length arr then Lwt.return_unit
           else
             let entry = arr.(i) in
-            f entry >>= fun () -> aux (i + 1)
+            f entry >>= fun () -> (aux (i + 1) [@tail])
         in
         aux 0
 
@@ -603,7 +603,7 @@ struct
                     let hash = hash_of_inode i in
                     mem hash >>= function
                     | true -> pause ()
-                    | false -> aux ~seed:(seed + 1) t))
+                    | false -> ( aux ~seed:(seed + 1) t [@tail])))
               >>= fun () -> add (Lazy.force t.hash) (to_bin t)
         in
         aux ~seed:0 t
