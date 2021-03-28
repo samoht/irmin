@@ -17,6 +17,7 @@ module Content_addressable (S : Pack.S) = struct
   type key = S.key
   type value = S.value
   type index = S.index
+  type hash = S.hash
 
   let check_not_closed t = if !(t.closed) then raise Irmin.Closed
 

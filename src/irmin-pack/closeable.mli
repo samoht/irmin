@@ -17,6 +17,7 @@ module Content_addressable (CA : Pack.S) :
     with type key = CA.key
      and type value = CA.value
      and type index = CA.index
+     and type hash = CA.hash
 
 module Atomic_write (AW : S.ATOMIC_WRITE_STORE) :
   S.ATOMIC_WRITE_STORE

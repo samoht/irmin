@@ -55,9 +55,8 @@ module Make_ext
     (Hash : Irmin.Hash.S)
     (N : Irmin.Private.Node.S
            with type metadata = Metadata.t
-            and type hash = Hash.t
             and type step = Path.step)
-    (CT : Irmin.Private.Commit.S with type hash = Hash.t) : sig
+    (CT : Irmin.Private.Commit.S) : sig
   include
     Irmin.S
       with type key = Path.t

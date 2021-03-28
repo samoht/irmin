@@ -18,10 +18,10 @@ type integrity_error = [ `Wrong_hash | `Absent_value ]
 
 module type CHECKABLE = sig
   type 'a t
-  type key
+  type hash
 
   val integrity_check :
-    offset:int64 -> length:int -> key -> _ t -> (unit, integrity_error) result
+    offset:int64 -> length:int -> hash -> _ t -> (unit, integrity_error) result
 end
 
 module type ATOMIC_WRITE_STORE = sig

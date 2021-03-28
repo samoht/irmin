@@ -38,6 +38,19 @@ let () =
 module I = IO
 module IO = IO.Unix
 
+module Id (H : Irmin.Hash.S) = struct
+  module Hash = H
+
+  type hash = H.t
+  type t = { hash : H.t; offset : int64 option } [@@deriving irmin]
+
+  let short_hash t = Hash.short_hash t.hash
+  let to_hash t = t.hash
+  let offset t = t.offset
+  let of_hash hash = { hash; offset = None }
+  let v ~offset hash = { hash; offset = Some offset }
+end
+
 module Make
     (IO_version : I.VERSION)
     (Config : Config.S)
@@ -46,28 +59,21 @@ module Make
     (P : Irmin.Path.S)
     (B : Irmin.Branch.S)
     (H : Irmin.Hash.S)
+    (Id : Pack_intf.ID with type hash = H.t)
     (Node : Irmin.Private.Node.S
-              with type metadata = M.t
-               and type hash = H.t
+              with type key = Id.t
+               and type metadata = M.t
                and type step = P.step)
-    (Commit : Irmin.Private.Commit.S with type hash = H.t) =
+    (Commit : Irmin.Private.Commit.S with type key = Id.t) =
 struct
-  module Key = struct
-    type hash = H.t
-    type t = { hash : hash; offset : int64 option }
-
-    let hash t = t.hash
-    let offset t = t.offset
-    let v ?offset hash = { hash; offset }
-  end
-
   module Index = Pack_index.Make (H)
-  module Pack = Pack.File (Index) (H) (Key) (IO_version)
+  module Pack = Pack.File (Index) (Id) (IO_version)
   module Dict = Pack_dict.Make (IO_version)
 
   let current_version = IO_version.io_version
 
   module X = struct
+    module Id = Id
     module Hash = H
 
     type 'a value = { hash : H.t; len : int32; magic : char; v : 'a }
@@ -75,8 +81,9 @@ struct
 
     module Contents = struct
       module CA = struct
-        module Key = H
+        module Key = Id
         module Val = C
+        module Hash = Id.Hash
 
         module CA_Pack = Pack.Make (struct
           include Val
@@ -119,8 +126,9 @@ struct
 
     module Commit = struct
       module CA = struct
-        module Key = H
+        module Key = Id
         module Val = Commit
+        module Hash = Id.Hash
 
         module CA_Pack = Pack.Make (struct
           include Val
@@ -131,9 +139,17 @@ struct
           let magic = 'C'
           let encode_value = Irmin.Type.(unstage (encode_bin value))
           let decode_value = Irmin.Type.(unstage (decode_bin value))
+          let size_of_t = Irmin.Type.(unstage (size_of Val.t))
+          let encode_t = Irmin.Type.(unstage (to_bin_string Val.t))
+
+          let size_of v =
+            match size_of_t v with
+            | None -> String.length (encode_t v)
+            | Some n -> n
 
           let encode_bin ~dict:_ ~offset:_ v hash =
-            encode_value { magic; hash; v }
+            let len = Int32.of_int (size_of v) in
+            encode_value { magic; len; hash; v }
 
           let decode_bin ~dict:_ ~hash:_ s off =
             let _, v = decode_value s off in
@@ -150,7 +166,17 @@ struct
 
     module Branch = struct
       module Key = B
-      module Val = H
+
+      module Val = struct
+        include Id
+
+        let hash_size = Hash.hash_size
+
+        let hash v =
+          let h = Hash.hash v in
+          Id.of_hash h
+      end
+
       module AW = Store.Atomic_write (Key) (Val) (IO_version)
       include Closeable.Atomic_write (AW)
     end
@@ -265,7 +291,8 @@ struct
                       let buf =
                         IO.read_buffer ~chunk:Hash.hash_size ~off pack
                       in
-                      decode_key buf 0 |> snd
+                      let h = decode_key buf 0 |> snd in
+                      Id.v ~offset:off h
                     in
                     let dict = Dict.find dict in
                     Node.CA.decode_bin ~hash ~dict buf 0
@@ -378,7 +405,7 @@ struct
     let* heads =
       match heads with None -> Repo.heads t | Some m -> Lwt.return m
     in
-    let hashes = List.map (fun x -> `Commit (Commit.hash x)) heads in
+    let hashes = List.map (fun x -> `Commit (Commit.id x)) heads in
     let+ () =
       Repo.iter ~cache_size:1_000_000 ~min:[] ~max:hashes ~node ~commit t
     in

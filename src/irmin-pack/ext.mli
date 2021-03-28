@@ -28,14 +28,16 @@ module Make
     (Path : Irmin.Path.S)
     (Branch : Irmin.Branch.S)
     (Hash : Irmin.Hash.S)
+    (Id : Pack_intf.ID with type hash = Hash.t)
     (N : Irmin.Private.Node.S
            with type metadata = Metadata.t
-            and type hash = Hash.t
+            and type key = Id.t
             and type step = Path.step)
-    (CT : Irmin.Private.Commit.S with type hash = Hash.t) : sig
+    (CT : Irmin.Private.Commit.S with type key = Id.t) : sig
   include
     Irmin.S
       with type key = Path.t
+       and type id = Id.t
        and type contents = Contents.t
        and type branch = Branch.t
        and type hash = Hash.t
@@ -53,3 +55,5 @@ module Make
     repo ->
     ([> `Msg of string ], [> `Msg of string ]) result Lwt.t
 end
+
+module Id (H : Irmin.Hash.S) : Pack_intf.ID with type hash = H.t

@@ -18,13 +18,11 @@ open! Import
 open Store_properties
 module Sigs = S
 
-module type KEY = sig
-  type t
-  type hash
+module type ID = sig
+  include Irmin.Id.S
 
-  val hash : t -> hash
   val offset : t -> int64 option
-  val v : ?offset:int64 -> hash -> t
+  val v : offset:int64 -> hash -> t
 end
 
 module type ELT = sig
@@ -50,10 +48,12 @@ end
 module type S = sig
   include Irmin.CONTENT_ADDRESSABLE_STORE
 
+  (* FIXME: remove add/unsafe_add duplication *)
+
   val add : 'a t -> value -> key Lwt.t
   (** Overwrite [add] to work with a read-only database handler. *)
 
-  val unsafe_add : 'a t -> key -> value -> unit Lwt.t
+  val unsafe_add : 'a t -> hash -> value -> key Lwt.t
   (** Overwrite [unsafe_add] to work with a read-only database handler. *)
 
   type index
@@ -70,7 +70,7 @@ module type S = sig
   (** @inline *)
 
   val unsafe_append :
-    ensure_unique:bool -> overcommit:bool -> 'a t -> key -> value -> unit
+    ensure_unique:bool -> overcommit:bool -> 'a t -> hash -> value -> key
 
   val unsafe_mem : 'a t -> key -> bool
   val unsafe_find : check_integrity:bool -> 'a t -> key -> value option
@@ -87,7 +87,7 @@ module type S = sig
   val generation : 'a t -> int64
   val offset : 'a t -> int64
 
-  include Sigs.CHECKABLE with type 'a t := 'a t and type key := key
+  include Sigs.CHECKABLE with type 'a t := 'a t and type hash := hash
   include CLOSEABLE with type 'a t := 'a t
   include CLEARABLE with type 'a t := 'a t
 
@@ -100,13 +100,17 @@ end
 
 module type MAKER = sig
   type key
-  type hash
   type index
+  type hash
 
   (** Save multiple kind of values in the same pack file. Values will be
       distinguished using [V.magic], so they have to all be different. *)
   module Make (V : ELT with type hash := hash) :
-    S with type key = key and type value = V.t and type index = index
+    S
+      with type key = key
+       and type value = V.t
+       and type index = index
+       and type hash = hash
 end
 
 module type Pack = sig
@@ -116,8 +120,7 @@ module type Pack = sig
 
   module File
       (Index : Pack_index.S)
-      (H : Irmin.Hash.S with type t = Index.key)
-      (Key : KEY with type hash = H.t)
+      (Id : ID with type hash = Index.key)
       (_ : IO.VERSION) :
-    MAKER with type key = Key.t and type index = Index.t and type hash = H.t
+    MAKER with type key = Id.t and type index = Index.t and type hash = Id.hash
 end

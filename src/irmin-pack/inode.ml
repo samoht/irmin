@@ -38,12 +38,14 @@ let take : type a. int -> a Seq.t -> a list =
 
 module Make_intermediate
     (Conf : Config.S)
-    (H : Irmin.Hash.S)
-    (Node : Irmin.Private.Node.S with type hash = H.t) =
+    (Id : Irmin.Id.S)
+    (Node : Irmin.Private.Node.S with type key = Id.t) =
 struct
   let () =
     if Conf.entries > Conf.stable_hash then
       invalid_arg "entries should be lower or equal to stable_hash"
+
+  module H = Id.Hash
 
   module Node = struct
     include Node
@@ -53,7 +55,7 @@ struct
   end
 
   module T = struct
-    type hash = H.t [@@deriving irmin]
+    type hash = Id.Hash.t [@@deriving irmin]
     type step = Node.step [@@deriving irmin]
     type metadata = Node.metadata [@@deriving irmin]
 
@@ -512,7 +514,7 @@ struct
 
     module Concrete = struct
       type kind = Contents | Contents_x of metadata | Node [@@deriving irmin]
-      type entry = { name : step; kind : kind; hash : hash } [@@deriving irmin]
+      type entry = { name : step; kind : kind; id : id } [@@deriving irmin]
 
       type 'a pointer = { index : int; pointer : hash; tree : 'a }
       [@@deriving irmin]
@@ -526,7 +528,7 @@ struct
 
       let to_entry (name, v) =
         match v with
-        | `Contents (hash, m) ->
+        | `Contents (id, m) ->
             if metadata_equal m Node.default then
               { name; kind = Contents; hash }
             else { name; kind = Contents_x m; hash }
@@ -1170,19 +1172,23 @@ struct
 end
 
 module Make_ext
-    (H : Irmin.Hash.S)
-    (Node : Irmin.Private.Node.S with type hash = H.t)
+    (Id : Irmin.Id.S)
+    (Node : Irmin.Private.Node.S with type key = Id.t)
     (Inter : INTER
-               with type hash = H.t
+               with type hash = Id.hash
+                and type key = Id.t
                 and type Val.metadata = Node.metadata
                 and type Val.step = Node.step)
-    (P : Pack.MAKER with type key = H.t and type index = Pack_index.Make(H).t) =
+    (P : Pack.MAKER
+           with type key = Id.t
+            and type hash = Id.hash
+            and type index = Pack_index.Make(Id.Hash).t) =
 struct
-  module Key = H
+  module Key = Id
   module Pack = P.Make (Inter.Elt)
 
   type 'a t = 'a Pack.t
-  type key = Key.t
+  type key = Id.t
   type value = Inter.Val.t
   type index = Pack.index
 
@@ -1208,7 +1214,7 @@ struct
     save t v;
     Lwt.return (hash v)
 
-  let equal_hash = Irmin.Type.(unstage (equal H.t))
+  let equal_hash = Irmin.Type.(unstage (equal Id.Hash.t))
 
   let check_hash expected got =
     if equal_hash expected got then ()
@@ -1250,10 +1256,13 @@ end
 
 module Make
     (Conf : Config.S)
-    (H : Irmin.Hash.S)
-    (P : Pack.MAKER with type key = H.t and type index = Pack_index.Make(H).t)
-    (Node : Irmin.Private.Node.S with type hash = H.t) =
+    (Id : Irmin.Id.S)
+    (P : Pack.MAKER
+           with type key = Id.t
+            and type hash = Id.hash
+            and type index = Pack_index.Make(Id.Hash).t)
+    (Node : Irmin.Private.Node.S with type key = Id.t) =
 struct
-  module Inter = Make_intermediate (Conf) (H) (Node)
+  module Inter = Make_intermediate (Conf) (Id) (Node)
   include Make_ext (H) (Node) (Inter) (P)
 end

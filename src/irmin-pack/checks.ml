@@ -236,7 +236,9 @@ module Make (M : MAKER) = struct
             Lwt_list.filter_map_s
               (fun x ->
                 match Repr.of_string Store.Hash.t x with
-                | Ok x -> Store.Commit.of_hash repo x
+                | Ok x ->
+                    let id = Store.Id.of_hash x in
+                    Store.Commit.of_id repo id
                 | _ -> Lwt.return None)
               heads
       in
