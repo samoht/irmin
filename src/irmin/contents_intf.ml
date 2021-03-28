@@ -43,11 +43,9 @@ module type STORE = sig
 
       If any of these operations fail, return [`Conflict]. *)
 
-  (** [Key] provides base functions for user-defined contents keys. *)
-  module Key : Hash.TYPED with type t = key and type value = value
-
+  module Key : Id.S with type t = key and type hash = hash
   module Val : S with type t = value
-  (** [Val] provides base functions for user-defined contents values. *)
+  module Hash : Hash.TYPED with type t = hash and type value = value
 end
 
 module type Contents = sig
@@ -85,8 +83,13 @@ module type Contents = sig
   (** [Store] creates a contents store. *)
   module Store (C : sig
     include S.CONTENT_ADDRESSABLE_STORE
-    module Key : Hash.S with type t = key
+    module Key : Id.S with type t = key and type hash = hash
     module Val : S with type t = value
+    module Hash : Hash.S with type t = hash
   end) :
-    STORE with type 'a t = 'a C.t and type key = C.key and type value = C.value
+    STORE
+      with type 'a t = 'a C.t
+       and type key = C.key
+       and type value = C.value
+       and type hash = C.hash
 end

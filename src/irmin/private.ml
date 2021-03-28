@@ -19,26 +19,29 @@ open S.Store_properties
 
 module type S = sig
   module Hash : Hash.S
-  (** Internal hashes. *)
+  (** Store hashes. *)
 
-  module Contents : Contents.STORE with type key = Hash.t
+  module Id : Id.S with type hash = Hash.t
+  (** Object identifiers. *)
+
   (** Private content store. *)
+  module Contents : Contents.STORE with type key = Id.t and type hash = Hash.t
 
-  module Node : Node.STORE with type key = Hash.t
   (** Private node store. *)
+  module Node : Node.STORE with type key = Id.t and type hash = Hash.t
 
-  module Commit : Commit.STORE with type key = Hash.t
   (** Private commit store. *)
+  module Commit : Commit.STORE with type key = Id.t and type hash = Hash.t
 
-  module Branch : Branch.STORE with type value = Hash.t
+  module Branch : Branch.STORE with type value = Id.t
   (** Private branch store. *)
 
   (** Private slices. *)
   module Slice :
     Slice.S
-      with type contents = Contents.key * Contents.value
-       and type node = Node.key * Node.value
-       and type commit = Commit.key * Commit.value
+      with type contents = Id.t * Contents.value
+       and type node = Id.t * Node.value
+       and type commit = Id.t * Commit.value
 
   (** Private repositories. *)
   module Repo : sig
@@ -66,7 +69,7 @@ module type S = sig
 
   (** URI-based low-level sync. *)
   module Sync : sig
-    include Sync.S with type commit = Commit.key and type branch = Branch.key
+    include Sync.S with type commit = Hash.t and type branch = Branch.key
 
     val v : Repo.t -> t Lwt.t
   end

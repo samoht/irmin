@@ -63,9 +63,9 @@ module type S = sig
         and then a new one is started afterwards. *)
 
   type store_handle =
-    | Commit_t : hash -> store_handle
-    | Node_t : hash -> store_handle
-    | Content_t : hash -> store_handle
+    | Commit_t : id -> store_handle
+    | Node_t : id -> store_handle
+    | Content_t : id -> store_handle
 
   val layer_id : repo -> store_handle -> layer_id Lwt.t
   (** [layer_id t store_handle] returns the layer where an object, identified by
@@ -160,17 +160,19 @@ module type Irmin_layers = sig
       (Path : Irmin.Path.S)
       (Branch : Irmin.Branch.S)
       (Hash : Irmin.Hash.S)
+      (Id : Irmin.Id.S with type hash = Hash.t)
       (Node : Irmin.Private.Node.S
                 with type metadata = Metadata.t
-                 and type hash = Hash.t
+                 and type key = Id.t
                  and type step = Path.step)
-      (Commit : Irmin.Private.Commit.S with type hash = Hash.t) :
+      (Commit : Irmin.Private.Commit.S with type key = Id.t) :
     S
       with type key = Path.t
        and type contents = Contents.t
        and type branch = Branch.t
        and type hash = Hash.t
        and type step = Path.step
+       and type id = Id.t
        and type metadata = Metadata.t
        and type Key.step = Path.step
 

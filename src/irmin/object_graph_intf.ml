@@ -103,22 +103,15 @@ module type S = sig
   (** The base functions over graph internals. *)
 end
 
-module type HASH = sig
-  include Type.S
-
-  val short_hash : t -> int
-end
-
 module type Object_graph = sig
   module type S = S
-  module type HASH = HASH
 
   (** Build a graph. *)
-  module Make (Hash : HASH) (Branch : Type.S) :
+  module Make (Key : Id.S) (Branch : Type.S) :
     S
       with type V.t =
-            [ `Contents of Hash.t
-            | `Node of Hash.t
-            | `Commit of Hash.t
+            [ `Contents of Key.t
+            | `Node of Key.t
+            | `Commit of Key.t
             | `Branch of Branch.t ]
 end

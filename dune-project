@@ -1,4 +1,3 @@
-(lang dune 2.7)
+(lang dune 2.8)
 (name irmin)
-(allow_approximate_merlin)
 (cram enable)

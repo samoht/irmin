@@ -55,13 +55,7 @@ end
 
 open Store_properties
 
-module type CONTENT_ADDRESSABLE_STORE = sig
-  (** {1 Content-addressable stores}
-
-      Content-addressable stores are store where it is possible to read and add
-      new values. Keys are derived from the values raw contents and hence are
-      deterministic. *)
-
+module type STORE = sig
   type -'a t
   (** The type for content-addressable backend stores. The ['a] phantom type
       carries information about the store mutability. *)
@@ -78,27 +72,45 @@ module type CONTENT_ADDRESSABLE_STORE = sig
   val find : [> read ] t -> key -> value option Lwt.t
   (** [find t k] is [Some v] if [k] is associated to [v] in [t] and [None] is
       [k] is not present in [t]. *)
+end
+
+module type CONTENT_ADDRESSABLE_STORE = sig
+  (** {1 Content-addressable stores}
+
+      Content-addressable stores are store where it is possible to read and add
+      new values. Keys are derived from the values raw contents and hence are
+      deterministic. *)
+
+  include STORE
+  (** @inline *)
 
   val add : [> write ] t -> value -> key Lwt.t
   (** Write the contents of a value to the store. It's the responsibility of the
       content-addressable store to generate a consistent key. *)
 
-  val unsafe_add : [> write ] t -> key -> value -> unit Lwt.t
-  (** Same as {!add} but allows to specify the key directly. The backend might
-      choose to discared that key and/or can be corrupt if the key scheme is not
+  type hash
+  (** The type for hashes. *)
+
+  val unsafe_add : [> write ] t -> hash -> value -> key Lwt.t
+  (** Same as {!add} but allows to specify the hash directly. The backend might
+      choose to discard that key and/or can be corrupt if the key scheme is not
       consistent. *)
 
   include CLEARABLE with type 'a t := 'a t
 end
 
-module type CONTENT_ADDRESSABLE_STORE_MAKER = functor
-  (K : Hash.S)
-  (V : Type.S)
-  -> sig
-  include CONTENT_ADDRESSABLE_STORE with type key = K.t and type value = V.t
-  include BATCH with type 'a t := 'a t
-  include OF_CONFIG with type 'a t := 'a t
-  include CLOSEABLE with type 'a t := 'a t
+module type CONTENT_ADDRESSABLE_STORE_MAKER = sig
+  module Make (K : Id.S) (V : Type.S) : sig
+    include
+      CONTENT_ADDRESSABLE_STORE
+        with type key = K.t
+         and type hash = K.hash
+         and type value = V.t
+
+    include BATCH with type 'a t := 'a t
+    include OF_CONFIG with type 'a t := 'a t
+    include CLOSEABLE with type 'a t := 'a t
+  end
 end
 
 module type APPEND_ONLY_STORE = sig
@@ -107,34 +119,30 @@ module type APPEND_ONLY_STORE = sig
       Append-onlye stores are store where it is possible to read and add new
       values. *)
 
-  type -'a t
-  (** The type for append-only backend stores. The ['a] phantom type carries
-      information about the store mutability. *)
+  include STORE
+  (** @inline *)
 
-  type key
-  (** The type for keys. *)
+  type hash
+  (** The type for hashes. *)
 
-  type value
-  (** The type for raw values. *)
-
-  val mem : [> read ] t -> key -> bool Lwt.t
-  (** [mem t k] is true iff [k] is present in [t]. *)
-
-  val find : [> read ] t -> key -> value option Lwt.t
-  (** [find t k] is [Some v] if [k] is associated to [v] in [t] and [None] is
-      [k] is not present in [t]. *)
-
-  val add : [> write ] t -> key -> value -> unit Lwt.t
+  val add : [> write ] t -> hash -> value -> key Lwt.t
   (** Write the contents of a value to the store. *)
 
   include CLEARABLE with type 'a t := 'a t
 end
 
-module type APPEND_ONLY_STORE_MAKER = functor (K : Type.S) (V : Type.S) -> sig
-  include APPEND_ONLY_STORE with type key = K.t and type value = V.t
-  include BATCH with type 'a t := 'a t
-  include OF_CONFIG with type 'a t := 'a t
-  include CLOSEABLE with type 'a t := 'a t
+module type APPEND_ONLY_STORE_MAKER = sig
+  module Make (K : Id.S) (V : Type.S) : sig
+    include
+      APPEND_ONLY_STORE
+        with type key = K.t
+         and type hash = K.hash
+         and type value = V.t
+
+    include BATCH with type 'a t := 'a t
+    include OF_CONFIG with type 'a t := 'a t
+    include CLOSEABLE with type 'a t := 'a t
+  end
 end
 
 module type METADATA = sig
@@ -156,6 +164,7 @@ module type ATOMIC_WRITE_STORE = sig
       Atomic-write stores are stores where it is possible to read, update and
       remove elements, with atomically guarantees. *)
 
+  (** @inline *)
   type t
   (** The type for atomic-write backend stores. *)
 
@@ -218,9 +227,11 @@ module type ATOMIC_WRITE_STORE = sig
   include CLEARABLE with type _ t := t
 end
 
-module type ATOMIC_WRITE_STORE_MAKER = functor (K : Type.S) (V : Type.S) -> sig
-  include ATOMIC_WRITE_STORE with type key = K.t and type value = V.t
-  include OF_CONFIG with type _ t := t
+module type ATOMIC_WRITE_STORE_MAKER = sig
+  module Make (K : Type.S) (V : Type.S) : sig
+    include ATOMIC_WRITE_STORE with type key = K.t and type value = V.t
+    include OF_CONFIG with type _ t := t
+  end
 end
 
 type remote = ..

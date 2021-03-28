@@ -31,12 +31,12 @@ let list_partition_map f t =
   in
   aux [] [] t
 
-module Make (Hash : HASH) (Branch : Type.S) = struct
+module Make (Key : Id.S) (Branch : Type.S) = struct
   module X = struct
     type t =
-      [ `Contents of Hash.t
-      | `Node of Hash.t
-      | `Commit of Hash.t
+      [ `Contents of Key.t
+      | `Node of Key.t
+      | `Commit of Key.t
       | `Branch of Branch.t ]
     [@@deriving irmin]
 
@@ -48,9 +48,9 @@ module Make (Hash : HASH) (Branch : Type.S) = struct
        are good enough to be used as short hashes. *)
     let hash (t : t) : int =
       match t with
-      | `Contents c -> Hash.short_hash c
-      | `Node n -> Hash.short_hash n
-      | `Commit c -> Hash.short_hash c
+      | `Contents c -> Key.short_hash c
+      | `Node n -> Key.short_hash n
+      | `Commit c -> Key.short_hash c
       | `Branch b -> hash_branch b
   end
 
@@ -206,9 +206,9 @@ module Make (Hash : HASH) (Branch : Type.S) = struct
     let vertex_name k =
       let str t v = "\"" ^ Type.to_string t v ^ "\"" in
       match k with
-      | `Node n -> str Hash.t n
-      | `Commit c -> str Hash.t c
-      | `Contents c -> str Hash.t c
+      | `Node n -> str Key.t n
+      | `Commit c -> str Key.t c
+      | `Contents c -> str Key.t c
       | `Branch b -> str Branch.t b
 
     let vertex_attributes k = !vertex_attributes k

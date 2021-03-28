@@ -55,7 +55,7 @@ module Make (S : S) = struct
         let* commits =
           Lwt_list.map_p
             (fun hash ->
-              S.Commit.of_hash repo hash >|= function
+              S.Commit.of_id repo hash >|= function
               | None -> Alcotest.fail "Cannot read commit hash"
               | Some c -> c)
             hashes
@@ -113,14 +113,14 @@ module Make (S : S) = struct
   let test_nodes x () =
     let test repo =
       let g = g repo and n = n repo in
-      let k = normal (P.Contents.Key.hash "foo") in
-      let check_key = check P.Node.Key.t in
+      let k = normal (P.Id.of_hash (P.Contents.Hash.hash "foo")) in
+      let check_hash = check P.Node.Hash.t in
       let check_val = check [%typ: Graph.value option] in
       let check_list = checks [%typ: S.step * P.Node.Val.value] in
       let check_node msg v =
         let h' = H_node.hash v in
         let+ h = with_node repo (fun n -> P.Node.add n v) in
-        check_key (msg ^ ": hash(v) = add(v)") h h'
+        check_hash (msg ^ ": hash(v) = add(v)") (P.Id.to_hash h) h'
       in
       let v = P.Node.Val.empty in
       check_node "empty node" v >>= fun () ->
@@ -160,13 +160,13 @@ module Make (S : S) = struct
       check_node "node: x+y+z+a+b" u >>= fun () ->
       let h = H_node.hash u in
       let* k = with_node repo (fun n -> P.Node.add n u) in
-      check_key "hash(v) = add(v)" h k;
+      check_hash "hash(v) = add(v)" h (P.Id.to_hash k);
       let* w = P.Node.find n k in
       check_values (get w);
       let* kv1 = kv1 ~repo in
       let* k1 = with_node repo (fun g -> Graph.v g [ ("x", normal kv1) ]) in
       let* k1' = with_node repo (fun g -> Graph.v g [ ("x", normal kv1) ]) in
-      check_key "k1.1" k1 k1';
+      check_hash "k1.1" (P.Id.to_hash k1) (P.Id.to_hash k1');
       let* t1 = P.Node.find n k1 in
       let k' = P.Node.Val.find (get t1) "x" in
       check
@@ -286,7 +286,7 @@ module Make (S : S) = struct
       let* kr2s = History.closure h ~min:[] ~max:[ kr2 ] in
       check_keys "g2" [ kr1; kr2 ] kr2s;
       let* () =
-        S.Commit.of_hash repo kr1 >|= function
+        S.Commit.of_id repo kr1 >|= function
         | None -> Alcotest.fail "Cannot read commit hash"
         | Some c ->
             Alcotest.(check string)

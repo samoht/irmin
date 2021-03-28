@@ -24,21 +24,24 @@ let ( -- ) = Int64.sub
 
 open! Import
 
-module Table (K : Irmin.Hash.S) = Hashtbl.Make (struct
-  type t = K.t
+module HashedType (H : Irmin.Hash.S) = struct
+  type t = H.t
 
-  let hash = K.short_hash
-  let equal = Irmin.Type.(unstage (equal K.t))
-end)
+  let hash t = H.short_hash t
+  let equal = Irmin.Type.(unstage (equal H.t))
+end
 
 module File
     (Index : Pack_index.S)
-    (K : Irmin.Hash.S with type t = Index.key)
+    (H : Irmin.Hash.S with type t = Index.key)
+    (Key : KEY with type hash = H.t)
     (IO_version : IO.VERSION) =
 struct
   module IO_cache = IO.Cache
   module IO = IO.Unix
-  module Tbl = Table (K)
+  module H' = HashedType (H)
+  module Tbl = Hashtbl.Make (H')
+  module Lru = Irmin.Private.Lru.Make (H')
   module Dict = Pack_dict.Make (IO_version)
 
   type index = Index.t
@@ -75,7 +78,7 @@ struct
   let IO_cache.{ v } =
     IO_cache.memoize ~clear ~valid ~v:(fun index -> unsafe_v ~index) Layout.pack
 
-  type key = K.t
+  type key = Key.t
 
   let close t =
     t.open_instances <- t.open_instances - 1;
@@ -84,17 +87,7 @@ struct
       IO.close t.block;
       Dict.close t.dict)
 
-  module Make (V : ELT with type hash := K.t) = struct
-    module H = struct
-      include K
-
-      let hash = K.short_hash
-      let equal = Irmin.Type.(unstage (equal K.t))
-    end
-
-    module Tbl = Table (K)
-    module Lru = Irmin.Private.Lru.Make (H)
-
+  module Make (V : ELT with type hash := H.t) = struct
     type nonrec 'a t = {
       pack : 'a t;
       lru : V.t Lru.t;
@@ -103,9 +96,10 @@ struct
       readonly : bool;
     }
 
-    type key = K.t
+    type key = Key.t
 
-    let equal_key = Irmin.Type.(unstage (equal K.t))
+    let equal_key x y = H'.equal (Key.hash x) (Key.hash y)
+    let equal_hash = Irmin.Type.(unstage (equal H.t))
 
     type value = V.t
     type index = Index.t
@@ -159,73 +153,107 @@ struct
       let t = unsafe_v ?fresh ?readonly ?lru_size ~index root in
       Lwt.return t
 
-    let pp_hash = Irmin.Type.pp K.t
-    let decode_key = Irmin.Type.(unstage (decode_bin K.t))
+    let pp_hash = Irmin.Type.pp H.t
 
+    let pp_key ppf t =
+      Fmt.pf ppf "%a:%a" pp_hash (Key.hash t) Fmt.(option int64) (Key.offset t)
+
+    let decode_hash = Irmin.Type.(unstage (decode_bin H.t))
+
+    let decode_len =
+      Irmin.Type.(unstage (decode_bin (map int32 Int32.to_int Int32.of_int)))
+
+    (* FIXME(samoht): too much copies *)
+    (* |hash|len(value)|magic|value| *)
     let io_read_and_decode_hash ~off t =
-      let buf = Bytes.create K.hash_size in
+      let buf = Bytes.create H.hash_size in
       let n = IO.read t.pack.block ~off buf in
-      assert (n = K.hash_size);
-      let _, v = decode_key (Bytes.unsafe_to_string buf) 0 in
+      assert (n = H.hash_size);
+      let buf = Bytes.unsafe_to_string buf in
+      let _, v = decode_hash buf 0 in
+      Key.v ~offset:off v
+
+    let io_read_and_decode_len ~off t =
+      let buf = Bytes.create 4 in
+      let off = Int64.add off (Int64.of_int H.hash_size) in
+      let n = IO.read t.pack.block ~off buf in
+      assert (n = 4);
+      let buf = Bytes.unsafe_to_string buf in
+      let _, v = decode_len buf 0 in
       v
-
-    let unsafe_mem t k =
-      Log.debug (fun l -> l "[pack] mem %a" pp_hash k);
-      Tbl.mem t.staging k || Lru.mem t.lru k || Index.mem t.pack.index k
-
-    let mem t k =
-      let b = unsafe_mem t k in
-      Lwt.return b
-
-    let check_key k v =
-      let k' = V.hash v in
-      if equal_key k k' then Ok () else Error (k, k')
 
     exception Invalid_read
 
     let io_read_and_decode ~off ~len t =
       if (not (IO.readonly t.pack.block)) && off > IO.offset t.pack.block then
         raise Invalid_read;
+      let len =
+        match len with None -> io_read_and_decode_len ~off t | Some n -> n
+      in
       let buf = Bytes.create len in
       let n = IO.read t.pack.block ~off buf in
       if n <> len then raise Invalid_read;
-      let hash off = io_read_and_decode_hash ~off t in
+      let hash off =
+        let k = io_read_and_decode_hash ~off t in
+        Key.hash k
+      in
       let dict = Dict.find t.pack.dict in
       V.decode_bin ~hash ~dict (Bytes.unsafe_to_string buf) 0
+
+    let unsafe_mem t h =
+      Log.debug (fun l -> l "[pack] mem %a" pp_hash h);
+      Tbl.mem t.staging h || Lru.mem t.lru h || Index.mem t.pack.index h
+
+    let mem t k =
+      let b = unsafe_mem t (Key.hash k) in
+      Lwt.return b
+
+    let check_key k v =
+      let h = V.hash v in
+      if equal_hash (Key.hash k) h then Ok () else Error (k, h)
 
     let pp_io ppf t =
       let name = Filename.basename (Filename.dirname (IO.name t.pack.block)) in
       let mode = if t.readonly then ":RO" else "" in
       Fmt.pf ppf "%s%s" name mode
 
+    let unsafe_find_offset ~check_integrity ~off ~len t k =
+      let v = io_read_and_decode ~off ~len t in
+      (if check_integrity then
+       check_key k v |> function
+       | Ok () -> ()
+       | Error (expected, got) ->
+           Fmt.failwith "corrupted value: got %a, expecting %a." pp_hash got
+             pp_key expected);
+      Lru.add t.lru (Key.hash k) v;
+      Some v
+
     let unsafe_find ~check_integrity t k =
-      Log.debug (fun l -> l "[pack:%a] find %a" pp_io t pp_hash k);
+      Log.debug (fun l -> l "[pack:%a] find %a" pp_io t pp_key k);
       Stats.incr_finds ();
-      match Tbl.find t.staging k with
+      let h = Key.hash k in
+      match Tbl.find t.staging h with
       | v ->
-          Lru.add t.lru k v;
+          Lru.add t.lru h v;
           Some v
       | exception Not_found -> (
-          match Lru.find t.lru k with
+          match Lru.find t.lru h with
           | v -> Some v
           | exception Not_found -> (
               Stats.incr_cache_misses ();
-              match Index.find t.pack.index k with
+              match Index.find t.pack.index (Key.hash k) with
               | None -> None
               | Some (off, len, _) ->
-                  let v = io_read_and_decode ~off ~len t in
-                  (if check_integrity then
-                   check_key k v |> function
-                   | Ok () -> ()
-                   | Error (expected, got) ->
-                       Fmt.failwith "corrupted value: got %a, expecting %a."
-                         pp_hash got pp_hash expected);
-                  Lru.add t.lru k v;
-                  Some v))
+                  unsafe_find_offset ~check_integrity ~off ~len:(Some len) t k))
 
     let find t k =
-      let v = unsafe_find ~check_integrity:true t k in
-      Lwt.return v
+      match Key.offset k with
+      | None ->
+          let v = unsafe_find ~check_integrity:true t k in
+          Lwt.return v
+      | Some off ->
+          let v = unsafe_find_offset ~check_integrity:true ~off ~len:None t k in
+          Lwt.return v
 
     let cast t = (t :> read_write t)
 
@@ -246,10 +274,11 @@ struct
 
     let auto_flush = 1024
 
-    let unsafe_append ~ensure_unique ~overcommit t k v =
-      if ensure_unique && unsafe_mem t k then ()
+    let unsafe_append ~ensure_unique ~overcommit ~add_to_index t h v =
+      if ensure_unique && unsafe_mem t h then
+        (* FIXME(samoht): use the correct offset *) Key.v h
       else (
-        Log.debug (fun l -> l "[pack] append %a" pp_hash k);
+        Log.debug (fun l -> l "[pack] append %a" pp_hash h);
         let offset k =
           match Index.find t.pack.index k with
           | None ->
@@ -261,20 +290,22 @@ struct
         in
         let dict = Dict.index t.pack.dict in
         let off = IO.offset t.pack.block in
-        V.encode_bin ~offset ~dict v k (IO.append t.pack.block);
+        V.encode_bin ~offset ~dict v h (IO.append t.pack.block);
         let len = Int64.to_int (IO.offset t.pack.block -- off) in
-        Index.add ~overcommit t.pack.index k (off, len, V.magic v);
+        if add_to_index then
+          Index.add ~overcommit t.pack.index h (off, len, V.magic v);
         if Tbl.length t.staging >= auto_flush then flush t
-        else Tbl.add t.staging k v;
-        Lru.add t.lru k v)
+        else Tbl.add t.staging h v;
+        Lru.add t.lru h v;
+        Key.v ~offset:off h)
 
     let add t v =
-      let k = V.hash v in
-      unsafe_append ~ensure_unique:true ~overcommit:true t k v;
+      let h = V.hash v in
+      let k = unsafe_append ~ensure_unique:true ~overcommit:true t h v in
       Lwt.return k
 
-    let unsafe_add t k v =
-      unsafe_append ~ensure_unique:true ~overcommit:true t k v;
+    let unsafe_add t h v =
+      let _k = unsafe_append ~ensure_unique:true ~overcommit:true t h v in
       Lwt.return ()
 
     let unsafe_close t =

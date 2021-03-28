@@ -281,7 +281,7 @@ module type S = sig
   val counters : unit -> counters
   val dump_counters : unit Fmt.t
   val reset_counters : unit -> unit
-  val inspect : t -> [ `Contents | `Node of [ `Map | `Hash | `Value ] ]
+  val inspect : t -> [ `Contents | `Node of [ `Map | `Ref | `Value ] ]
 end
 
 module type Tree = sig
@@ -299,10 +299,10 @@ module type Tree = sig
          and type contents = P.Contents.value
          and type hash = P.Hash.t
 
-    type kinded_hash := [ `Contents of hash * metadata | `Node of hash ]
+    type kinded_id := [ `Contents of P.Id.t * metadata | `Node of P.Id.t ]
 
-    val import : P.Repo.t -> kinded_hash -> t option Lwt.t
-    val import_no_check : P.Repo.t -> kinded_hash -> t
+    val import : P.Repo.t -> kinded_id -> t option Lwt.t
+    val import_no_check : P.Repo.t -> kinded_id -> t
 
     val export :
       ?clear:bool ->
@@ -316,7 +316,8 @@ module type Tree = sig
     val equal : t -> t -> bool
     val node_t : node Type.t
     val tree_t : t Type.t
-    val hash : t -> kinded_hash
+    val id : t -> P.Id.t
+    val hash : t -> hash
     val of_private_node : P.Repo.t -> P.Node.value -> node
     val to_private_node : node -> P.Node.value or_error Lwt.t
   end

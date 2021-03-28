@@ -67,8 +67,17 @@ module Make
                and type step = P.step)
     (Commit : Irmin.Private.Commit.S with type hash = H.t) =
 struct
+  module Indexed_hash = struct
+    type hash = H.t
+    type t = { hash : hash; offset : int64 option }
+
+    let hash t = t.hash
+    let offset t = t.offset
+    let v ?offset hash = { hash; offset }
+  end
+
   module Index = Pack_index.Make (H)
-  module Pack = Pack.File (Index) (H) (IO_version)
+  module Pack = Pack.File (Index) (H) (Indexed_hash) (IO_version)
 
   type store_handle =
     | Commit_t : H.t -> store_handle
@@ -97,7 +106,7 @@ struct
           include Val
           module H = Irmin.Hash.Typed (H) (Val)
 
-          let hash = H.hash
+          let hash t = Indexed_hash.v (H.hash t)
           let magic = 'B'
           let value = value Val.t
           let encode_value = Irmin.Type.(unstage (encode_bin value))

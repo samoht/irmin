@@ -37,7 +37,7 @@ module type STORE = sig
   module Key : S with type t = key
   (** Base functions on keys. *)
 
-  module Val : Hash.S with type t = value
+  module Val : Id.S with type t = value
   (** Base functions on values. *)
 end
 

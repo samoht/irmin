@@ -18,6 +18,15 @@ open! Import
 open Store_properties
 module Sigs = S
 
+module type KEY = sig
+  type t
+  type hash
+
+  val hash : t -> hash
+  val offset : t -> int64 option
+  val v : ?offset:int64 -> hash -> t
+end
+
 module type ELT = sig
   include Irmin.Type.S
 
@@ -91,11 +100,12 @@ end
 
 module type MAKER = sig
   type key
+  type hash
   type index
 
   (** Save multiple kind of values in the same pack file. Values will be
       distinguished using [V.magic], so they have to all be different. *)
-  module Make (V : ELT with type hash := key) :
+  module Make (V : ELT with type hash := hash) :
     S with type key = key and type value = V.t and type index = index
 end
 
@@ -106,6 +116,8 @@ module type Pack = sig
 
   module File
       (Index : Pack_index.S)
-      (K : Irmin.Hash.S with type t = Index.key)
-      (_ : IO.VERSION) : MAKER with type key = K.t and type index = Index.t
+      (H : Irmin.Hash.S with type t = Index.key)
+      (Key : KEY with type hash = H.t)
+      (_ : IO.VERSION) :
+    MAKER with type key = Key.t and type index = Index.t and type hash = H.t
 end

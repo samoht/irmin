@@ -52,8 +52,17 @@ module Make
                and type step = P.step)
     (Commit : Irmin.Private.Commit.S with type hash = H.t) =
 struct
+  module Key = struct
+    type hash = H.t
+    type t = { hash : hash; offset : int64 option }
+
+    let hash t = t.hash
+    let offset t = t.offset
+    let v ?offset hash = { hash; offset }
+  end
+
   module Index = Pack_index.Make (H)
-  module Pack = Pack.File (Index) (H) (IO_version)
+  module Pack = Pack.File (Index) (H) (Key) (IO_version)
   module Dict = Pack_dict.Make (IO_version)
 
   let current_version = IO_version.io_version
@@ -61,7 +70,8 @@ struct
   module X = struct
     module Hash = H
 
-    type 'a value = { hash : H.t; magic : char; v : 'a } [@@deriving irmin]
+    type 'a value = { hash : H.t; len : int32; magic : char; v : 'a }
+    [@@deriving irmin]
 
     module Contents = struct
       module CA = struct
@@ -77,9 +87,17 @@ struct
           let value = value_t Val.t
           let encode_value = Irmin.Type.(unstage (encode_bin value))
           let decode_value = Irmin.Type.(unstage (decode_bin value))
+          let size_of_t = Irmin.Type.(unstage (size_of Val.t))
+          let encode_t = Irmin.Type.(unstage (to_bin_string Val.t))
+
+          let size_of v =
+            match size_of_t v with
+            | None -> String.length (encode_t v)
+            | Some n -> n
 
           let encode_bin ~dict:_ ~offset:_ v hash =
-            encode_value { magic; hash; v }
+            let len = Int32.of_int (size_of v) in
+            encode_value { hash; len; magic; v }
 
           let decode_bin ~dict:_ ~hash:_ s off =
             let _, t = decode_value s off in

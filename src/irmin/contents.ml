@@ -198,16 +198,19 @@ end
 
 module Store (S : sig
   include S.CONTENT_ADDRESSABLE_STORE
-  module Key : Hash.S with type t = key
+  module Key : Id.S with type t = key and type hash = hash
   module Val : S with type t = value
+  module Hash : Hash.S with type t = hash
 end) =
 struct
-  module Key = Hash.Typed (S.Key) (S.Val)
+  module Key = S.Key
+  module Hash = Hash.Typed (S.Hash) (S.Val)
   module Val = S.Val
 
   type 'a t = 'a S.t
   type key = S.key
   type value = S.value
+  type hash = S.hash
 
   let find = S.find
   let add = S.add

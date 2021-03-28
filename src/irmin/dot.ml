@@ -53,7 +53,8 @@ module Make (S : Store.S) = struct
   module Node = S.Private.Node
   module Commit = S.Private.Commit
   module Slice = S.Private.Slice
-  module Graph = Object_graph.Make (S.Hash) (Branch.Key)
+  module Graph = Object_graph.Make (S.Private.Id) (Branch.Key)
+  module Id = S.Private.Id
 
   let fprintf (t : db) ?depth ?(html = false) ?full ~date name =
     Log.debug (fun f ->
@@ -85,7 +86,7 @@ module Make (S : Store.S) = struct
         (if html then
          sprintf "<div class='node'><div class='sha1'>%s</div></div>"
         else fun x -> x)
-          (string_of_key Node.Key.t k)
+          (string_of_key Id.t k)
       in
       `Label s
     in
@@ -98,7 +99,7 @@ module Make (S : Store.S) = struct
       `Label s
     in
     let label_of_commit k c =
-      let k = string_of_key Commit.Key.t k in
+      let k = string_of_key Id.t k in
       let o = Commit.Val.info c in
       let s =
         if html then
@@ -117,8 +118,8 @@ module Make (S : Store.S) = struct
       in
       `Label s
     in
-    let label_of_contents k v =
-      let k = string_of_key Contents.Key.t k in
+    let label_of_contents h v =
+      let k = string_of_key Id.t h in
       let s =
         if html then
           sprintf
@@ -187,7 +188,8 @@ module Make (S : Store.S) = struct
         List.iter
           (fun c -> add_edge (`Commit k) [ `Style `Bold ] (`Commit c))
           (Commit.Val.parents r);
-        add_edge (`Commit k) [ `Style `Dashed ] (`Node (Commit.Val.node r)))
+        let n = Commit.Val.node r in
+        add_edge (`Commit k) [ `Style `Dashed ] (`Node n))
       !commits;
     let branch_t = S.Private.Repo.branch_t (S.repo t) in
     let* bs = Branch.list branch_t in

@@ -81,7 +81,34 @@ module type ATOMIC_WRITE_STORE = sig
   (** @inline *)
 end
 
+(** [APPEND_ONLY_STORE_MAKER] is the signature exposed by append-only store
+    backends. [K] is the implementation of keys and [V] is the implementation of
+    values. *)
+module type APPEND_ONLY_STORE_MAKER = sig
+  include S.APPEND_ONLY_STORE_MAKER
+  (** @inline *)
+end
+
+(** [CONTENT_ADDRESSABLE_STOREMAKER] is the signature exposed by
+    content-addressable store backends. [K] is the implementation of keys and
+    [V] is the implementation of values. *)
+module type CONTENT_ADDRESSABLE_STORE_MAKER = sig
+  include S.CONTENT_ADDRESSABLE_STORE_MAKER
+  (** @inline *)
+end
+
+(** [ATOMIC_WRITE_STORE_MAKER] is the signature exposed by atomic-write store
+    backends. [K] is the implementation of keys and [V] is the implementation of
+    values.*)
+module type ATOMIC_WRITE_STORE_MAKER = sig
+  include S.ATOMIC_WRITE_STORE_MAKER
+  (** @inline *)
+end
+
 (** {1 User-Defined Contents} *)
+
+module Id = Id
+(** Object identifiers. *)
 
 module Path = Path
 (** Store paths.
@@ -466,74 +493,29 @@ module Dot (S : S) : Dot.S with type db = S.t
       internal stores into separate store, with total control over the binary
       format and using the native synchronization protocols when available. *)
 
-(** [APPEND_ONLY_STORE_MAKER] is the signature exposed by append-only store
-    backends. [K] is the implementation of keys and [V] is the implementation of
-    values. *)
-module type APPEND_ONLY_STORE_MAKER = functor (K : Type.S) (V : Type.S) -> sig
-  include APPEND_ONLY_STORE with type key = K.t and type value = V.t
-  open Private.Sigs.Store_properties
+module Content_addressable (S : APPEND_ONLY_STORE_MAKER) : sig
+  (** Same as {!CONTENT_ADDRESSABLE_STORE_MAKER} but with type equalities for
+      [type 'a t] exposed. *)
 
-  include BATCH with type 'a t := 'a t
-  (** @inline *)
+  module Make (K : Id.S) (V : Type.S) : sig
+    include
+      CONTENT_ADDRESSABLE_STORE
+        with type 'a t = 'a S.Make(K)(V).t
+         and type key = K.t
+         and type hash = K.hash
+         and type value = V.t
 
-  include OF_CONFIG with type 'a t := 'a t
-  (** @inline *)
+    open Private.Sigs.Store_properties
 
-  include CLOSEABLE with type 'a t := 'a t
-  (** @inline *)
-end
+    include BATCH with type 'a t := 'a t
+    (** @inline *)
 
-(** [CONTENT_ADDRESSABLE_STOREMAKER] is the signature exposed by
-    content-addressable store backends. [K] is the implementation of keys and
-    [V] is the implementation of values. *)
-module type CONTENT_ADDRESSABLE_STORE_MAKER = functor
-  (K : Hash.S)
-  (V : Type.S)
-  -> sig
-  include CONTENT_ADDRESSABLE_STORE with type key = K.t and type value = V.t
-  open Private.Sigs.Store_properties
+    include OF_CONFIG with type 'a t := 'a t
+    (** @inline *)
 
-  include BATCH with type 'a t := 'a t
-  (** @inline *)
-
-  include OF_CONFIG with type 'a t := 'a t
-  (** @inline *)
-
-  include CLOSEABLE with type 'a t := 'a t
-  (** @inline *)
-end
-
-module Content_addressable
-    (S : APPEND_ONLY_STORE_MAKER)
-    (K : Hash.S)
-    (V : Type.S) : sig
-  include
-    CONTENT_ADDRESSABLE_STORE
-      with type 'a t = 'a S(K)(V).t
-       and type key = K.t
-       and type value = V.t
-
-  open Private.Sigs.Store_properties
-
-  include BATCH with type 'a t := 'a t
-  (** @inline *)
-
-  include OF_CONFIG with type 'a t := 'a t
-  (** @inline *)
-
-  include CLOSEABLE with type 'a t := 'a t
-  (** @inline *)
-end
-
-(** [ATOMIC_WRITE_STORE_MAKER] is the signature exposed by atomic-write store
-    backends. [K] is the implementation of keys and [V] is the implementation of
-    values.*)
-module type ATOMIC_WRITE_STORE_MAKER = functor (K : Type.S) (V : Type.S) -> sig
-  include ATOMIC_WRITE_STORE with type key = K.t and type value = V.t
-  open Private.Sigs.Store_properties
-
-  include OF_CONFIG with type _ t := t
-  (** @inline *)
+    include CLOSEABLE with type 'a t := 'a t
+    (** @inline *)
+  end
 end
 
 (** Simple store creator. Use the same type of all of the internal keys and
@@ -550,16 +532,18 @@ module Make_ext
     (Path : Path.S)
     (Branch : Branch.S)
     (Hash : Hash.S)
+    (Id : Id.S with type hash = Hash.t)
     (Node : Private.Node.S
               with type metadata = Metadata.t
-               and type hash = Hash.t
+               and type key = Id.t
                and type step = Path.step)
-    (Commit : Private.Commit.S with type hash = Hash.t) :
+    (Commit : Private.Commit.S with type key = Id.t) :
   S
     with type key = Path.t
      and type contents = Contents.t
      and type branch = Branch.t
      and type hash = Hash.t
+     and type id = Id.t
      and type step = Path.step
      and type metadata = Metadata.t
      and type Key.step = Path.step
@@ -577,6 +561,7 @@ module Of_private (P : Private.S) :
      and type Key.step = P.Node.Path.step
      and type repo = P.Repo.t
      and type slice = P.Slice.t
+     and type id = P.Id.t
      and module Private = P
 
 module Export_for_backends = Export_for_backends

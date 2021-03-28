@@ -24,23 +24,21 @@ module Branch = Branch
 module Info = Info
 module Dot = Dot.Make
 module Hash = Hash
+module Id = Id
 module Path = Path
 module Perms = Perms
 
 exception Closed
 
 module CA_check_closed (CA : S.CONTENT_ADDRESSABLE_STORE_MAKER) :
-  S.CONTENT_ADDRESSABLE_STORE_MAKER =
-functor
-  (K : Hash.S)
-  (V : Type.S)
-  ->
-  struct
-    module S = CA (K) (V)
+  S.CONTENT_ADDRESSABLE_STORE_MAKER = struct
+  module Make (K : Id.S) (V : Type.S) = struct
+    module S = CA.Make (K) (V)
 
     type 'a t = { closed : bool ref; t : 'a S.t }
     type key = S.key
     type value = S.value
+    type hash = S.hash
 
     let check_not_closed t = if !(t.closed) then raise Closed
 
@@ -78,15 +76,12 @@ functor
       check_not_closed t;
       S.clear t.t
   end
+end
 
 module AW_check_closed (AW : S.ATOMIC_WRITE_STORE_MAKER) :
-  S.ATOMIC_WRITE_STORE_MAKER =
-functor
-  (K : Type.S)
-  (V : Type.S)
-  ->
-  struct
-    module S = AW (K) (V)
+  S.ATOMIC_WRITE_STORE_MAKER = struct
+  module Make (K : Type.S) (V : Type.S) = struct
+    module S = AW.Make (K) (V)
 
     type t = { closed : bool ref; t : S.t }
     type key = S.key
@@ -146,6 +141,7 @@ functor
       check_not_closed t;
       S.clear t.t
   end
+end
 
 module Make_ext
     (CA : S.CONTENT_ADDRESSABLE_STORE_MAKER)
@@ -155,23 +151,26 @@ module Make_ext
     (P : Path.S)
     (B : Branch.S)
     (H : Hash.S)
+    (Id : Id.S with type hash = H.t)
     (N : Node.S
            with type metadata = M.t
-            and type hash = H.t
+            and type key = Id.t
             and type step = P.step)
-    (CT : Commit.S with type hash = H.t) =
+    (CT : Commit.S with type key = Id.t) =
 struct
   module CA = CA_check_closed (CA)
   module AW = AW_check_closed (AW)
 
   module X = struct
+    module Id = Id
     module Hash = H
 
     module Contents = struct
       module CA = struct
-        module Key = Hash
+        module Key = Id
         module Val = C
-        include CA (Key) (Val)
+        module Hash = H
+        include CA.Make (Key) (Val)
       end
 
       include Contents.Store (CA)
@@ -179,9 +178,10 @@ struct
 
     module Node = struct
       module CA = struct
-        module Key = Hash
+        module Key = Id
         module Val = N
-        include CA (Key) (Val)
+        module Hash = H
+        include CA.Make (Key) (Val)
       end
 
       include Node.Store (Contents) (P) (M) (CA)
@@ -189,9 +189,10 @@ struct
 
     module Commit = struct
       module CA = struct
-        module Key = Hash
+        module Key = Id
         module Val = CT
-        include CA (Key) (Val)
+        module Hash = H
+        include CA.Make (Key) (Val)
       end
 
       include Commit.Store (Node) (CA)
@@ -199,8 +200,8 @@ struct
 
     module Branch = struct
       module Key = B
-      module Val = H
-      include AW (Key) (Val)
+      module Val = Id
+      include AW.Make (Key) (Val)
     end
 
     module Slice = Slice.Make (Contents) (Node) (Commit)
@@ -259,7 +260,8 @@ module Make
 struct
   module N = Node.Make (H) (P) (M)
   module CT = Commit.Make (H)
-  include Make_ext (CA) (AW) (M) (C) (P) (B) (H) (N) (CT)
+  module K = Id.Identity (H)
+  include Make_ext (CA) (AW) (M) (C) (P) (B) (H) (K) (N) (CT)
 end
 
 module Of_private = Store.Make

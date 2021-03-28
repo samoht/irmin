@@ -1,12 +1,15 @@
 (library
  (name test_mem)
  (modules test_mem)
+ (public_name irmin-test.mem)
  (libraries irmin irmin-test irmin.mem lwt))
 
 (executable
  (name test)
  (modules test)
- (libraries alcotest irmin-test test_mem))
+ (public_name irmin-test)
+ (package irmin-test)
+ (libraries alcotest irmin-test irmin-test.mem))
 
 (rule
  (alias runtest)
@@ -17,4 +20,6 @@
 (executable
  (name bench)
  (modules bench)
+ (public_name irmin-bench)
+ (package irmin-test)
  (libraries irmin.mem irmin-test.bench))

@@ -50,7 +50,7 @@ module Make
     end)
     (M : METADATA) =
 struct
-  type hash = K.t [@@deriving irmin]
+  type key = K.t [@@deriving irmin]
   type step = P.step [@@deriving irmin]
   type metadata = M.t [@@deriving irmin]
   type kind = [ `Node | `Contents of M.t ]
@@ -89,7 +89,7 @@ struct
     let compare = Type.(unstage (compare P.step_t))
   end)
 
-  type value = [ `Contents of hash * metadata | `Node of hash ]
+  type value = [ `Contents of key * metadata | `Node of key ]
   type t = entry StepMap.t
 
   let v l =
@@ -144,25 +144,30 @@ module Store
     (C : Contents.STORE)
     (P : Path.S)
     (M : METADATA) (S : sig
-      include CONTENT_ADDRESSABLE_STORE with type key = C.key
-      module Key : Hash.S with type t = key
+      include
+        CONTENT_ADDRESSABLE_STORE with type key = C.key and type hash = C.hash
+
+      module Key : Id.S with type t = key and type hash = hash
+      module Hash : Hash.S with type t = hash
 
       module Val :
         S
           with type t = value
-           and type hash = key
+           and type key = key
            and type metadata = M.t
            and type step = P.step
     end) =
 struct
   module Contents = C
-  module Key = Hash.Typed (S.Key) (S.Val)
+  module Key = C.Key
+  module Hash = Hash.Typed (S.Hash) (S.Val)
   module Path = P
   module Metadata = M
 
   type 'a t = 'a C.t * 'a S.t
   type key = S.key
   type value = S.value
+  type hash = S.hash
 
   let mem (_, t) = S.mem t
   let find (_, t) = S.find t
@@ -381,11 +386,13 @@ module Graph (S : STORE) = struct
   let value_t = S.Val.value_t
 end
 
-module V1 (N : S with type step = string) = struct
+module V1 (K : Id.S) (N : S with type step = string and type key = K.t) = struct
+  module H = K.Hash
+
   module K = struct
     let h = Type.string_of `Int64
-    let to_bin_string = Type.(unstage (to_bin_string N.hash_t))
-    let of_bin_string = Type.(unstage (of_bin_string N.hash_t))
+    let to_bin_string = Type.(unstage (to_bin_string H.t))
+    let of_bin_string = Type.(unstage (of_bin_string H.t))
 
     let size_of =
       let size_of = Type.(unstage (size_of h)) in
@@ -404,11 +411,15 @@ module V1 (N : S with type step = string) = struct
         | Ok v -> v
         | Error (`Msg e) -> Fmt.failwith "decode_bin: %s" e )
 
-    let t = Type.like N.hash_t ~bin:(encode_bin, decode_bin, size_of)
+    type t = K.t
+
+    let t =
+      let t = Type.like H.t ~bin:(encode_bin, decode_bin, size_of) in
+      Type.map t K.of_hash K.to_hash
   end
 
   type step = N.step
-  type hash = N.hash [@@deriving irmin]
+  type key = K.t [@@deriving irmin]
   type metadata = N.metadata [@@deriving irmin]
   type value = N.value
   type t = { n : N.t; entries : (step * value) list }

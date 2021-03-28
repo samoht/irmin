@@ -36,24 +36,25 @@ module Make_ext
     (P : Irmin.Path.S)
     (B : Irmin.Branch.S)
     (H : Irmin.Hash.S)
+    (Id : Irmin.Id.S with type hash = H.t)
     (N : Irmin.Private.Node.S
            with type metadata = M.t
-            and type hash = H.t
+            and type key = Id.t
             and type step = P.step)
-    (CT : Irmin.Private.Commit.S with type hash = H.t) =
+    (CT : Irmin.Private.Commit.S with type key = Id.t) =
 struct
   (* TODO: add check_closed *)
 
   module X = struct
     module Hash = H
+    module Id = Id
 
     module Contents = struct
       module CA = struct
-        module Key = Hash
+        module Key = Id
         module Val = C
-        module CA = CA (Key) (Val)
-        module Layered_CA = Layered_store.Content_addressable (Key) (Val) (CA)
-        include Layered_CA
+        module Hash = H
+        include CA.Make (Id) (Val)
       end
 
       include Irmin.Contents.Store (CA)
@@ -61,11 +62,10 @@ struct
 
     module Node = struct
       module CA = struct
-        module Key = Hash
+        module Key = Id
         module Val = N
-        module CA = CA (Key) (Val)
-        module Layered_CA = Layered_store.Content_addressable (Key) (Val) (CA)
-        include Layered_CA
+        module Hash = H
+        include CA.Make (Key) (Val)
       end
 
       include Irmin.Private.Node.Store (Contents) (P) (M) (CA)
@@ -73,11 +73,10 @@ struct
 
     module Commit = struct
       module CA = struct
-        module Key = Hash
+        module Key = Id
+        module Hash = H
         module Val = CT
-        module CA = CA (Key) (Val)
-        module Layered_CA = Layered_store.Content_addressable (Key) (Val) (CA)
-        include Layered_CA
+        include CA.Make (Key) (Val)
       end
 
       include Irmin.Private.Commit.Store (Node) (CA)
@@ -85,8 +84,8 @@ struct
 
     module Branch = struct
       module Key = B
-      module Val = H
-      include AW (Key) (Val)
+      module Val = Id
+      include AW.Make (Key) (Val)
     end
 
     module Slice = Irmin.Private.Slice.Make (Contents) (Node) (Commit)
@@ -138,9 +137,9 @@ struct
     Lwt.fail_with "not implemented"
 
   type store_handle =
-    | Commit_t : hash -> store_handle
-    | Node_t : hash -> store_handle
-    | Content_t : hash -> store_handle
+    | Commit_t : id -> store_handle
+    | Node_t : id -> store_handle
+    | Content_t : id -> store_handle
 
   let layer_id _repo _store_handle = Lwt.fail_with "not implemented"
   let async_freeze _ = failwith "not implemented"
@@ -177,7 +176,8 @@ module Make
 struct
   module N = Irmin.Private.Node.Make (H) (P) (M)
   module CT = Irmin.Private.Commit.Make (H)
-  include Make_ext (CA) (AW) (M) (C) (P) (B) (H) (N) (CT)
+  module I = Irmin.Id.Identity (H)
+  include Make_ext (CA) (AW) (M) (C) (P) (B) (H) (I) (N) (CT)
 end
 
 module Stats = Stats
