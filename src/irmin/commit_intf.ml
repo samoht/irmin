@@ -22,16 +22,19 @@ module type S = sig
   type t
   (** The type for commit values. *)
 
-  type hash
-  (** Type for keys. *)
+  type node
+  (** Type for node keys. *)
 
-  val v : info:Info.t -> node:hash -> parents:hash list -> t
+  type commit
+  (** Type for commit keys. *)
+
+  val v : info:Info.t -> node:node -> parents:commit list -> t
   (** Create a commit. *)
 
-  val node : t -> hash
+  val node : t -> node
   (** The underlying node. *)
 
-  val parents : t -> hash list
+  val parents : t -> commit list
   (** The commit parents. *)
 
   val info : t -> Info.t
@@ -42,12 +45,16 @@ module type S = sig
   val t : t Type.t
   (** [t] is the value type for {!t}. *)
 
-  val hash_t : hash Type.t
-  (** [hash_t] is the value type for {!hash}. *)
+  val node_t : node Type.t
+  (** [node_t] is the value type for {!hash}. *)
+
+  val commit_t : commit Type.t
+  (** [commit_t] is the value type for {!hash}. *)
 end
 
 module type Maker = sig
-  module Make (H : Type.S) : S with type hash = H.t
+  module Make (N : Key.S) (C : Key.S with type hash = N.hash) :
+    S with type node = N.t and type commit = C.t
 end
 
 module type Store = sig
@@ -59,12 +66,12 @@ module type Store = sig
   (** [merge] is the 3-way merge function for commit keys. *)
 
   (** [Key] provides base functions for commit keys. *)
-  module Key : Hash.Typed with type t = key and type value = value
+  module Key : Key.S with type t = key and type hash = hash
 
   (** [Val] provides functions for commit values. *)
-  module Val : S with type t = value and type hash = key
+  module Val : S with type t = value and type commit = key
 
-  module Node : Node.Store with type key = Val.hash
+  module Node : Node.Store with type key = Val.node
   (** [Node] is the underlying node store. *)
 end
 
@@ -146,7 +153,7 @@ module type History = sig
     min:commit list ->
     max:commit list ->
     ?commit:(commit -> unit Lwt.t) ->
-    ?edge:(commit -> node -> unit Lwt.t) ->
+    ?edge:(commit -> commit -> unit Lwt.t) ->
     ?skip:(commit -> bool Lwt.t) ->
     ?rev:bool ->
     unit ->
@@ -170,7 +177,7 @@ module type Sigs = sig
 
   (** V1 serialisation. *)
   module V1 (C : S) : sig
-    include S with type hash = C.hash
+    include S with type node = C.node and type commit = C.commit
 
     val import : C.t -> t
     val export : t -> C.t
@@ -182,13 +189,14 @@ module type Sigs = sig
   (** [Store] creates a new commit store. *)
   module Store
       (N : Node.Store)
-      (S : Content_addressable.S with type key = N.key)
-      (K : Hash.S with type t = S.key)
-      (V : S with type hash = S.key and type t = S.value) :
+      (S : Content_addressable.S with type hash = N.hash)
+      (K : Key.S with type t = S.key and type hash = S.hash)
+      (V : S with type node = N.key and type commit = S.key and type t = S.value) :
     Store
       with type 'a t = 'a N.t * 'a S.t
        and type key = S.key
        and type value = S.value
+       and type hash = S.hash
        and module Val = V
 
   module type History = History

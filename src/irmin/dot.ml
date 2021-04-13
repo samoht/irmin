@@ -53,7 +53,9 @@ module Make (S : Store.S) = struct
   module Node = S.Private.Node
   module Commit = S.Private.Commit
   module Slice = S.Private.Slice
-  module Graph = Object_graph.Make (S.Hash) (Branch.Key)
+
+  module Graph =
+    Object_graph.Make (Contents.Key) (Node.Key) (Commit.Key) (Branch.Key)
 
   let fprintf (t : db) ?depth ?(html = false) ?full ~date name =
     Log.debug (fun f ->

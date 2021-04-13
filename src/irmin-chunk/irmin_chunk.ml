@@ -113,6 +113,8 @@ module Chunk (K : Irmin.Hash.S) = struct
 end
 
 module Content_addressable (S : Irmin.Append_only.Maker) = struct
+  module Key = S.Key
+
   module Make (K : Irmin.Hash.S) (V : Irmin.Type.S) = struct
     module Chunk = Chunk (K)
     module AO = S.Make (K) (Chunk)

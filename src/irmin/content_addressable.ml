@@ -14,44 +14,51 @@
  * OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
  *)
 
-open Import
+open! Import
+open Lwt.Infix
 include Content_addressable_intf
 
 module Make (AO : Append_only.Maker) = struct
-  module Make (K : Hash.S) (V : Type.S) = struct
-    include AO.Make (K) (V)
-    open Lwt.Infix
-    module H = Hash.Typed (K) (V)
+  module Key = AO.Key
+
+  module Make (H : Hash.S) (V : Type.S) = struct
+    include AO.Make (H) (V)
+    module Key = Key (H) (V)
+    module H = Hash.Typed (H) (V)
 
     let hash = H.hash
-    let pp_key = Type.pp K.t
-    let equal_hash = Type.(unstage (equal K.t))
+    let pp_hash = Type.pp H.t
+    let pp_key = Type.pp Key.t
+    let equal_hash = Type.(unstage (equal H.t))
 
     let find t k =
       find t k >>= function
       | None -> Lwt.return_none
       | Some v as r ->
-          let k' = hash v in
-          if equal_hash k k' then Lwt.return r
+          let h = hash v in
+          if equal_hash (Key.hash k) h then Lwt.return r
           else
             Fmt.kstrf Lwt.fail_invalid_arg
-              "corrupted value: got %a, expecting %a" pp_key k' pp_key k
+              "corrupted value: got %a, expecting %a" pp_hash h pp_key k
 
     let unsafe_add t k v = add t k v
 
     let add t v =
-      let k = hash v in
-      add t k v >|= fun () -> k
+      let h = hash v in
+      add t h v
   end
 end
 
 module Check_closed (CA : Maker) = struct
+  module Key = CA.Key
+
   module Make (K : Hash.S) (V : Type.S) = struct
     module S = CA.Make (K) (V)
 
     type 'a t = { closed : bool ref; t : 'a S.t }
     type key = S.key
     type value = S.value
+    type hash = S.hash
 
     let check_not_closed t = if !(t.closed) then raise Store_properties.Closed
 

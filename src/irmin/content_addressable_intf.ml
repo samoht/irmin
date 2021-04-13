@@ -27,14 +27,17 @@ module type S = sig
   include Read_only.S
   (** @inline *)
 
+  type hash
+  (** The type for keys hashes. *)
+
   val add : [> write ] t -> value -> key Lwt.t
   (** Write the contents of a value to the store. It's the responsibility of the
       content-addressable store to generate a consistent key. *)
 
-  val unsafe_add : [> write ] t -> key -> value -> unit Lwt.t
-  (** Same as {!add} but allows to specify the key directly. The backend might
-      choose to discared that key and/or can be corrupt if the key scheme is not
-      consistent. *)
+  val unsafe_add : [> write ] t -> hash -> value -> key Lwt.t
+  (** Same as {!add} but allows to specify the key hash directly. The backend
+      might choose to discared that key and/or can be corrupt if the key scheme
+      is not consistent. *)
 
   include Clearable with type 'a t := 'a t
   (** @inline *)
@@ -47,8 +50,11 @@ module type S = sig
 end
 
 module type Maker = sig
-  module Make (K : Hash.S) (V : Type.S) : sig
-    include S with type key = K.t and type value = V.t
+  module Key : Key.Maker
+
+  module Make (H : Hash.S) (V : Type.S) : sig
+    include
+      S with type key = Key(H)(V).t and type value = V.t and type hash = H.t
 
     include Of_config with type 'a t := 'a t
     (** @inline *)
@@ -60,12 +66,15 @@ module type Sigs = sig
   module type Maker = Maker
 
   module Make (X : Append_only.Maker) : sig
-    module Make (K : Hash.S) (V : Type.S) : sig
+    module Key : Key.Maker
+
+    module Make (H : Hash.S) (V : Type.S) : sig
       include
         S
-          with type 'a t = 'a X.Make(K)(V).t
-           and type key = K.t
+          with type 'a t = 'a X.Make(H)(V).t
+           and type key = Key(H)(V).t
            and type value = V.t
+           and type hash = H.t
 
       include Of_config with type 'a t := 'a t
       (** @inline *)

@@ -21,16 +21,18 @@ module type S = sig
   module Hash : Hash.S
   (** Internal hashes. *)
 
-  module Contents : Contents.Store with type key = Hash.t
+  module Contents : Contents.Store with type hash = Hash.t
   (** Private content store. *)
 
-  module Node : Node.Store with type key = Hash.t
   (** Private node store. *)
+  module Node :
+    Node.Store with type hash = Hash.t and type Val.contents = Contents.key
 
-  module Commit : Commit.Store with type key = Hash.t
   (** Private commit store. *)
+  module Commit :
+    Commit.Store with type hash = Hash.t and type Val.node = Node.key
 
-  module Branch : Branch.Store with type value = Hash.t
+  module Branch : Branch.Store with type value = Commit.key
   (** Private branch store. *)
 
   (** Private slices. *)
@@ -66,7 +68,7 @@ module type S = sig
 
   (** URI-based low-level remote synchronisation. *)
   module Remote : sig
-    include Remote.S with type commit = Commit.key and type branch = Branch.key
+    include Remote.S with type commit = Commit.hash and type branch = Branch.key
 
     val v : Repo.t -> t Lwt.t
   end

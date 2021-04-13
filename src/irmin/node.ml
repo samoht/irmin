@@ -120,15 +120,15 @@ end
 
 module Store
     (C : Contents.Store)
-    (S : Content_addressable.S with type key = C.key)
-    (K : Hash.S with type t = S.key)
-    (V : S with type t = S.value and type hash = S.key)
+    (S : Content_addressable.S with type hash = C.hash)
+    (K : Key.S with type t = S.key and type hash = C.hash)
+    (V : S with type t = S.value and type contents = C.key and type node = K.t)
     (M : Metadata.S with type t = V.metadata)
     (P : Path.S with type step = V.step) =
 struct
   module Contents = C
   module Val = V
-  module Key = Hash.Typed (K) (Val)
+  module Key = K
   module Path = P
   module Metadata = M
 

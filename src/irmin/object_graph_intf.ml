@@ -114,11 +114,15 @@ module type Sigs = sig
   module type HASH = HASH
 
   (** Build a graph. *)
-  module Make (Hash : HASH) (Branch : Type.S) :
+  module Make
+      (Contents : Type.S)
+      (Node : Type.S)
+      (Commit : Type.S)
+      (Branch : Type.S) :
     S
       with type V.t =
-            [ `Contents of Hash.t
-            | `Node of Hash.t
-            | `Commit of Hash.t
+            [ `Contents of Contents.t
+            | `Node of Node.t
+            | `Commit of Commit.t
             | `Branch of Branch.t ]
 end

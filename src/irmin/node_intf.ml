@@ -26,13 +26,16 @@ module type S = sig
   type metadata
   (** The type for node metadata. *)
 
-  type hash
-  (** The type for keys. *)
+  type contents
+  (** The type for contents keys. *)
+
+  type node
+  (** The type for node keys. *)
 
   type step
   (** The type for steps between nodes. *)
 
-  type value = [ `Node of hash | `Contents of hash * metadata ]
+  type value = [ `Node of node | `Contents of contents * metadata ]
   (** The type for either (node) keys or (contents) keys combined with their
       metadata. *)
 
@@ -77,8 +80,11 @@ module type S = sig
   val metadata_t : metadata Type.t
   (** [metadata_t] is the value type for {!metadata}. *)
 
-  val hash_t : hash Type.t
-  (** [hash_t] is the value type for {!hash}. *)
+  val contents_t : contents Type.t
+  (** [contents_t] is the value type for {!hash}. *)
+
+  val node_t : node Type.t
+  (** [node_t] is the value type for {!hash}. *)
 
   val step_t : step Type.t
   (** [step_t] is the value type for {!step}. *)
@@ -100,11 +106,16 @@ end
 
 module type Maker = sig
   module Make
-      (H : Hash.S) (P : sig
+      (C : Type.S)
+      (N : Type.S) (P : sig
         type step [@@deriving irmin]
       end)
       (M : Metadata) :
-    S with type metadata = M.t and type hash = H.t and type step = P.step
+    S
+      with type metadata = M.t
+       and type contents = C.t
+       and type node = N.t
+       and type step = P.step
 end
 
 module type Store = sig
@@ -117,7 +128,7 @@ module type Store = sig
   (** [merge] is the 3-way merge function for nodes keys. *)
 
   (** [Key] provides base functions for node keys. *)
-  module Key : Hash.Typed with type t = key and type value = value
+  module Key : Key.S with type t = key and type hash = hash
 
   module Metadata : Metadata.S
   (** [Metadata] provides base functions for node metadata. *)
@@ -126,11 +137,11 @@ module type Store = sig
   module Val :
     S
       with type t = value
-       and type hash = key
+       and type node = key
        and type metadata = Metadata.t
        and type step = Path.step
 
-  module Contents : Contents.Store with type key = Val.hash
+  module Contents : Contents.Store with type key = Val.contents
   (** [Contents] is the underlying contents store. *)
 end
 
@@ -244,7 +255,8 @@ module type Sigs = sig
   module V1 (N : S with type step = string) : sig
     include
       S
-        with type hash = N.hash
+        with type contents = N.contents
+         and type node = N.node
          and type step = N.step
          and type metadata = N.metadata
 
@@ -258,15 +270,16 @@ module type Sigs = sig
   (** [Store] creates node stores. *)
   module Store
       (C : Contents.Store)
-      (S : Content_addressable.S with type key = C.key)
-      (K : Hash.S with type t = S.key)
-      (V : S with type t = S.value and type hash = S.key)
+      (S : Content_addressable.S with type hash = C.hash)
+      (K : Key.S with type t = S.key and type hash = C.hash)
+      (V : S with type t = S.value and type contents = C.key and type node = K.t)
       (M : Metadata.S with type t = V.metadata)
       (P : Path.S with type step = V.step) :
     Store
       with type 'a t = 'a C.t * 'a S.t
        and type key = S.key
        and type value = S.value
+       and type hash = S.hash
        and module Path = P
        and module Metadata = M
        and module Val = V

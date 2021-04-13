@@ -22,35 +22,37 @@ let src = Logs.Src.create "irmin.commit" ~doc:"Irmin commits"
 
 module Log = (val Logs.src_log src : Logs.LOG)
 
-module Make (H : Type.S) = struct
-  type hash = H.t [@@deriving irmin]
+module Make (N : Key.S) (C : Key.S with type hash = N.hash) = struct
+  type node = N.t [@@deriving irmin]
+  type commit = C.t [@@deriving irmin]
 
-  type t = { node : hash; parents : hash list; info : Info.t }
+  type t = { node : node; parents : commit list; info : Info.t }
   [@@deriving irmin]
 
   let parents t = t.parents
   let node t = t.node
   let info t = t.info
-  let compare_hash = Type.(unstage (compare H.t))
+  let compare_commit = Type.(unstage (compare C.t))
 
   let v ~info ~node ~parents =
-    let parents = List.fast_sort compare_hash parents in
+    let parents = List.fast_sort compare_commit parents in
     { node; parents; info }
 end
 
 module Store
     (N : Node.Store)
-    (S : Content_addressable.S with type key = N.key)
-    (K : Hash.S with type t = S.key)
-    (V : S with type hash = S.key and type t = S.value) =
+    (S : Content_addressable.S with type hash = N.hash)
+    (K : Key.S with type t = S.key and type hash = S.hash)
+    (V : S with type node = N.key and type commit = S.key and type t = S.value) =
 struct
   module Node = N
   module Val = V
-  module Key = Hash.Typed (K) (Val)
+  module Key = K
 
   type 'a t = 'a N.t * 'a S.t
   type key = S.key
   type value = S.value
+  type hash = S.hash
 
   let add (_, t) = S.add t
   let unsafe_add (_, t) = S.unsafe_add t
@@ -148,7 +150,7 @@ module History (S : Store) = struct
     type t = unit [@@deriving irmin]
   end
 
-  module Graph = Object_graph.Make (S.Key) (U)
+  module Graph = Object_graph.Make (U) (S.Node.Key) (S.Key) (U)
 
   let edges t =
     Log.debug (fun f -> f "edges");
@@ -193,7 +195,7 @@ module History (S : Store) = struct
     type t = S.Key.t
 
     let compare = Type.(unstage (compare S.Key.t))
-    let hash = S.Key.short_hash
+    let hash k = S.Key.Hash.short_hash (S.Key.hash k)
     let equal = Type.(unstage (equal S.Key.t))
   end
 
@@ -483,10 +485,10 @@ module History (S : Store) = struct
 end
 
 module V1 (C : S) = struct
-  module K = struct
+  module K (K : Type.S) = struct
     let h = Type.string_of `Int64
-    let hash_to_bin_string = Type.(unstage (to_bin_string C.hash_t))
-    let hash_of_bin_string = Type.(unstage (of_bin_string C.hash_t))
+    let hash_to_bin_string = Type.(unstage (to_bin_string K.t))
+    let hash_of_bin_string = Type.(unstage (of_bin_string K.t))
 
     let size_of =
       let size_of = Type.(unstage (size_of h)) in
@@ -505,11 +507,26 @@ module V1 (C : S) = struct
         | Ok v -> v
         | Error (`Msg e) -> Fmt.failwith "decode_bin: %s" e )
 
-    let t = Type.like C.hash_t ~bin:(encode_bin, decode_bin, size_of)
+    type t = K.t
+
+    let t = Type.like K.t ~bin:(encode_bin, decode_bin, size_of)
   end
 
-  type hash = C.hash [@@deriving irmin]
-  type t = { parents : hash list; c : C.t }
+  module Node = K (struct
+    type t = C.node
+
+    let t = C.node_t
+  end)
+
+  module Commit = K (struct
+    type t = C.commit
+
+    let t = C.commit_t
+  end)
+
+  type node = Node.t [@@deriving irmin]
+  type commit = Commit.t [@@deriving irmin]
+  type t = { parents : commit list; c : C.t }
 
   let import c = { c; parents = C.parents c }
   let export t = t.c
@@ -530,8 +547,8 @@ module V1 (C : S) = struct
   let t : t Type.t =
     let open Type in
     record "commit" (fun node parents info -> make ~info ~node ~parents)
-    |+ field "node" K.t node
-    |+ field "parents" (list ~len:`Int64 K.t) parents
+    |+ field "node" Node.t node
+    |+ field "parents" (list ~len:`Int64 Commit.t) parents
     |+ field "info" info_t info
     |> sealr
 end

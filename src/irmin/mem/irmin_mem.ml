@@ -20,6 +20,25 @@ let src = Logs.Src.create "irmin.mem" ~doc:"Irmin in-memory store"
 
 module Log = (val Logs.src_log src : Logs.LOG)
 
+module type V = sig
+  type t
+end
+
+module Key (H : Irmin.Hash.S) (V : V) = struct
+  module Hash = H
+
+  type hash = H.t
+  type id = V.t
+  type t = { hash : H.t; mutable id : V.t option }
+
+  let t : t Irmin.Type.t =
+    Irmin.Type.map H.t (fun hash -> { hash; id = None }) (fun t -> t.hash)
+
+  let hash t = t.hash
+  let id t = t.id
+  let v ?id hash = { hash; id }
+end
+
 module Read_only (K : Irmin.Type.S) (V : Irmin.Type.S) = struct
   module KMap = Map.Make (struct
     type t = K.t
@@ -57,13 +76,21 @@ module Read_only (K : Irmin.Type.S) (V : Irmin.Type.S) = struct
 end
 
 module Append_only = struct
-  module Make (K : Irmin.Type.S) (V : Irmin.Type.S) = struct
-    include Read_only (K) (V)
+  module Key = Key
 
-    let add t key value =
-      Log.debug (fun f -> f "add -> %a" pp_key key);
+  module Make (K : Irmin.Hash.S) (V : Irmin.Type.S) = struct
+    module Key = Key (K) (V)
+    include Read_only (Key) (V)
+
+    let pp_hash = Irmin.Type.pp K.t
+
+    type hash = Key.hash
+
+    let add t hash value =
+      Log.debug (fun f -> f "add -> %a" pp_hash hash);
+      let key = Key.v ~id:value hash in
       t.t <- KMap.add key value t.t;
-      Lwt.return_unit
+      Lwt.return key
   end
 end
 

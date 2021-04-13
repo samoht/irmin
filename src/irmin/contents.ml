@@ -198,11 +198,11 @@ end
 
 module Store
     (S : Content_addressable.S)
-    (H : Hash.S with type t = S.key)
+    (K : Key.S with type t = S.key and type hash = S.hash)
     (C : S with type t = S.value) =
 struct
   module Val = C
-  module Key = Hash.Typed (H) (Val)
+  module Key = K
   include S
 
   let read_opt t = function None -> Lwt.return_none | Some k -> find t k

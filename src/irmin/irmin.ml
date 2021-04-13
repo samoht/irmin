@@ -29,6 +29,7 @@ module Dot = Dot.Make
 module Hash = Hash
 module Path = Path
 module Perms = Perms
+module Key = Key
 
 exception Closed = Store_properties.Closed
 
@@ -54,25 +55,44 @@ struct
       module Hash = H
 
       module Contents = struct
+        module K = CA.Key (H) (C)
         module CA = CA.Make (H) (C)
-        include Contents.Store (CA) (H) (C)
+        include Contents.Store (CA) (K) (C)
       end
 
       module Node = struct
-        module V = N.Make (H) (P) (M)
+        (* this is rather painful *)
+        module rec K :
+          (Key.S with type t = CA.Key(H)(V).t and type hash = Hash.t) =
+          CA.Key (H) (V)
+
+        and V :
+          (Node.S
+            with type contents = Contents.key
+             and type node = K.t
+             and type metadata = M.t
+             and type step = P.step) =
+          N.Make (Contents.Key) (K) (P) (M)
+
         module CA = CA.Make (H) (V)
-        include Node.Store (Contents) (CA) (H) (V) (M) (P)
+        include Node.Store (Contents) (CA) (K) (V) (M) (P)
       end
 
       module Commit = struct
-        module C = CT.Make (H)
-        module CA = CA.Make (H) (C)
-        include Commit.Store (Node) (CA) (H) (C)
+        module rec K :
+          (Key.S with type t = CA.Key(H)(V).t and type hash = Hash.t) =
+          CA.Key (H) (V)
+
+        and V : (Commit.S with type node = Node.key and type commit = K.t) =
+          CT.Make (Node.Key) (K)
+
+        module CA = CA.Make (H) (V)
+        include Commit.Store (Node) (CA) (K) (V)
       end
 
       module Branch = struct
         module Key = B
-        module Val = H
+        module Val = Commit.Key
         include AW.Make (Key) (Val)
       end
 
