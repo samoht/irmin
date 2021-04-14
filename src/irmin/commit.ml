@@ -22,9 +22,16 @@ let src = Logs.Src.create "irmin.commit" ~doc:"Irmin commits"
 
 module Log = (val Logs.src_log src : Logs.LOG)
 
-module Make (N : Key.S) (C : Key.S with type hash = N.hash) = struct
-  type node = N.t [@@deriving irmin]
-  type commit = C.t [@@deriving irmin]
+module Make
+    (H : Hash.S)
+    (N : Key.Abstract with type hash = H.t)
+    (C : Key.Abstract with type hash = H.t) =
+struct
+  type node = N.t
+  type commit = C.t
+
+  let node_t = Type.map ~pp:N.dump H.t N.v N.hash
+  let commit_t = Type.map ~pp:C.dump H.t C.v C.hash
 
   type t = { node : node; parents : commit list; info : Info.t }
   [@@deriving irmin]
@@ -32,7 +39,7 @@ module Make (N : Key.S) (C : Key.S with type hash = N.hash) = struct
   let parents t = t.parents
   let node t = t.node
   let info t = t.info
-  let compare_commit = Type.(unstage (compare C.t))
+  let compare_commit = Type.(unstage (compare commit_t))
 
   let v ~info ~node ~parents =
     let parents = List.fast_sort compare_commit parents in

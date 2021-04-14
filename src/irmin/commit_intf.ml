@@ -53,7 +53,10 @@ module type S = sig
 end
 
 module type Maker = sig
-  module Make (N : Key.S) (C : Key.S with type hash = N.hash) :
+  module Make
+      (H : Hash.S)
+      (N : Key.Abstract with type hash = H.t)
+      (C : Key.Abstract with type hash = H.t) :
     S with type node = N.t and type commit = C.t
 end
 

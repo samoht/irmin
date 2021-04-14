@@ -106,8 +106,9 @@ end
 
 module type Maker = sig
   module Make
-      (C : Type.S)
-      (N : Type.S) (P : sig
+      (H : Hash.S)
+      (C : Key.Abstract with type hash = H.t)
+      (N : Key.Abstract with type hash = H.t) (P : sig
         type step [@@deriving irmin]
       end)
       (M : Metadata) :

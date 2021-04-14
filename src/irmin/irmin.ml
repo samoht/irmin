@@ -63,7 +63,7 @@ struct
       module Node = struct
         (* this is rather painful *)
         module rec K :
-          (Key.S with type t = CA.Key(H)(V).t and type hash = Hash.t) =
+          (Key.Abstract with type t = CA.Key(H)(V).t and type hash = Hash.t) =
           CA.Key (H) (V)
 
         and V :
@@ -72,22 +72,24 @@ struct
              and type node = K.t
              and type metadata = M.t
              and type step = P.step) =
-          N.Make (Contents.Key) (K) (P) (M)
+          N.Make (H) (Contents.Key) (K) (P) (M)
 
+        module K' = CA.Key (H) (V)
         module CA = CA.Make (H) (V)
-        include Node.Store (Contents) (CA) (K) (V) (M) (P)
+        include Node.Store (Contents) (CA) (K') (V) (M) (P)
       end
 
       module Commit = struct
         module rec K :
-          (Key.S with type t = CA.Key(H)(V).t and type hash = Hash.t) =
+          (Key.Abstract with type t = CA.Key(H)(V).t and type hash = Hash.t) =
           CA.Key (H) (V)
 
         and V : (Commit.S with type node = Node.key and type commit = K.t) =
-          CT.Make (Node.Key) (K)
+          CT.Make (H) (Node.Key) (K)
 
+        module K' = CA.Key (H) (V)
         module CA = CA.Make (H) (V)
-        include Commit.Store (Node) (CA) (K) (V)
+        include Commit.Store (Node) (CA) (K') (V)
       end
 
       module Branch = struct
