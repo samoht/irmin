@@ -17,6 +17,29 @@
 open! Import
 module IO = IO.Unix
 
+module Key (H : Irmin.Hash.S) = struct
+  module Hash = H
+
+  type hash = H.t
+  type metadata = int63
+  type t = { hash : hash; metadata : metadata option }
+
+  let t : t Irmin.Type.t =
+    Irmin.Type.map H.t (fun hash -> { hash; metadata = None }) (fun t -> t.hash)
+
+  let pp_hash = Irmin.Type.pp H.t
+  let pp_id = Irmin.Type.pp Int63.t
+
+  let dump ppf t =
+    match t.metadata with
+    | None -> Fmt.pf ppf "[%a]" pp_hash t.hash
+    | Some id -> Fmt.pf ppf "[%a:%a]" pp_hash t.hash pp_id id
+
+  let hash t = t.hash
+  let metadata t = t.metadata
+  let v ?metadata hash = { hash; metadata }
+end
+
 module Maker
     (V : Version.S)
     (Config : Conf.S)
@@ -32,8 +55,9 @@ struct
       (B : Irmin.Branch.S)
       (H : Irmin.Hash.S) =
   struct
-    module Index = Pack_index.Make (H)
-    module Pack = Content_addressable.Maker (V) (Index) (H)
+    module K = Key (H)
+    module Index = Pack_index.Make (K.Hash)
+    module Pack = Content_addressable.Maker (V) (Index)
     module Dict = Pack_dict.Make (V)
 
     module X = struct
@@ -43,71 +67,79 @@ struct
 
       module Contents = struct
         module CA = struct
-          module CA_Pack = Pack.Make (struct
-            include C
-            module H = Irmin.Hash.Typed (H) (C)
+          module CA_Pack =
+            Pack.Make
+              (K)
+              (struct
+                include C
+                module H = Irmin.Hash.Typed (H) (C)
 
-            let hash = H.hash
-            let magic = 'B'
-            let value = value_t C.t
-            let encode_value = Irmin.Type.(unstage (encode_bin value))
-            let decode_value = Irmin.Type.(unstage (decode_bin value))
+                let hash = H.hash
+                let magic = 'B'
+                let value = value_t C.t
+                let encode_value = Irmin.Type.(unstage (encode_bin value))
+                let decode_value = Irmin.Type.(unstage (decode_bin value))
 
-            let encode_bin ~dict:_ ~offset:_ v hash =
-              encode_value { magic; hash; v }
+                let encode_bin ~dict:_ ~offset:_ v k =
+                  let hash = K.hash k in
+                  encode_value { magic; hash; v }
 
-            let decode_bin ~dict:_ ~hash:_ s off =
-              let _, t = decode_value s off in
-              t.v
+                let decode_bin ~dict:_ ~key:_ s off =
+                  let _, t = decode_value s off in
+                  t.v
 
-            let magic _ = magic
-          end)
+                let magic _ = magic
+              end)
 
           include Content_addressable.Closeable (CA_Pack)
         end
 
-        include Irmin.Contents.Store (CA) (H) (C)
+        include Irmin.Contents.Store (CA) (K) (C)
       end
 
       module Node = struct
-        module Node = Node.Make (H) (P) (M)
-        module CA = Inode.Make (Config) (H) (Pack) (Node)
-        include Irmin.Private.Node.Store (Contents) (CA) (H) (CA.Val) (M) (P)
+        module Node = Node.Make (H) (K) (K) (P) (M)
+        module CA = Inode.Make (Config) (K) (Pack) (Node)
+        include Irmin.Private.Node.Store (Contents) (CA) (K) (CA.Val) (M) (P)
       end
 
       module Commit = struct
-        module Commit = Commit.Make (H)
+        module Commit = Commit.Make (H) (K) (K)
 
         module CA = struct
-          module CA_Pack = Pack.Make (struct
-            include Commit
-            module H = Irmin.Hash.Typed (H) (Commit)
+          module CA_Pack =
+            Pack.Make
+              (K)
+              (struct
+                include Commit
+                module H = Irmin.Hash.Typed (H) (Commit)
 
-            let hash = H.hash
-            let value = value_t Commit.t
-            let magic = 'C'
-            let encode_value = Irmin.Type.(unstage (encode_bin value))
-            let decode_value = Irmin.Type.(unstage (decode_bin value))
+                let hash = H.hash
+                let value = value_t Commit.t
+                let magic = 'C'
+                let encode_value = Irmin.Type.(unstage (encode_bin value))
+                let decode_value = Irmin.Type.(unstage (decode_bin value))
 
-            let encode_bin ~dict:_ ~offset:_ v hash =
-              encode_value { magic; hash; v }
+                let encode_bin ~dict:_ ~offset:_ v k =
+                  let hash = K.hash k in
+                  encode_value { magic; hash; v }
 
-            let decode_bin ~dict:_ ~hash:_ s off =
-              let _, v = decode_value s off in
-              v.v
+                let decode_bin ~dict:_ ~key:_ s off =
+                  let _, v = decode_value s off in
+                  v.v
 
-            let magic _ = magic
-          end)
+                let magic _ = magic
+              end)
 
           include Content_addressable.Closeable (CA_Pack)
         end
 
-        include Irmin.Private.Commit.Store (Node) (CA) (H) (Commit)
+        include Irmin.Private.Commit.Store (Node) (CA) (K) (Commit)
       end
 
       module Branch = struct
         module Key = B
-        module Val = H
+        module Val = K
         module AW = Atomic_write.Make (V) (Key) (Val)
         include Atomic_write.Closeable (AW)
       end
@@ -220,14 +252,15 @@ struct
                   | 'B' -> decode_contents buf 0 |> fst
                   | 'C' -> decode_commit buf 0 |> fst
                   | 'N' | 'I' ->
-                      let hash off =
+                      let key off =
                         let buf =
                           IO.read_buffer ~chunk:Hash.hash_size ~off pack
                         in
-                        decode_key buf 0 |> snd
+                        let hash = decode_key buf 0 |> snd in
+                        K.v ~metadata:off hash
                       in
                       let dict = Dict.find dict in
-                      Node.CA.decode_bin ~hash ~dict buf 0
+                      Node.CA.decode_bin ~key ~dict buf 0
                   | _ -> failwith "unexpected magic char"
                 in
                 Some len
@@ -307,7 +340,9 @@ struct
       let contents = X.Repo.contents_t t in
       let nodes = X.Repo.node_t t |> snd in
       let commits = X.Repo.commit_t t |> snd in
-      let check ~kind ~offset ~length k =
+      let check ~kind ~offset ~length h =
+        (* FIXME: metadata? *)
+        let k = K.v h in
         match kind with
         | `Contents -> X.Contents.CA.integrity_check ~offset ~length k contents
         | `Node -> X.Node.CA.integrity_check ~offset ~length k nodes
@@ -337,9 +372,9 @@ struct
       let* heads =
         match heads with None -> Repo.heads t | Some m -> Lwt.return m
       in
-      let hashes = List.map (fun x -> `Commit (Commit.hash x)) heads in
+      let ids = List.map (fun x -> `Commit (Commit.id x)) heads in
       let+ () =
-        Repo.iter ~cache_size:1_000_000 ~min:[] ~max:hashes ~node ~commit t
+        Repo.iter ~cache_size:1_000_000 ~min:[] ~max:ids ~node ~commit t
       in
       Utils.Progress.finalise bar;
       let pp_commits = Fmt.list ~sep:Fmt.comma Commit.pp_hash in

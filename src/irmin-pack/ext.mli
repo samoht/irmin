@@ -14,6 +14,8 @@
  * OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
  *)
 
+module Key (H : Irmin.Hash.S) : S.Key with type hash = H.t
+
 module Maker
     (_ : Version.S)
     (_ : Conf.S)

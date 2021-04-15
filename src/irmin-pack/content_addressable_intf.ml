@@ -19,6 +19,7 @@ open! Import
 module type Value = sig
   include Irmin.Type.S
 
+  type key
   type hash
 
   val hash : t -> hash
@@ -26,14 +27,14 @@ module type Value = sig
 
   val encode_bin :
     dict:(string -> int option) ->
-    offset:(hash -> int63 option) ->
+    offset:(key -> int63 option) ->
     t ->
-    hash ->
+    key ->
     (string -> unit) ->
     unit
 
   val decode_bin :
-    dict:(int -> string option) -> hash:(int63 -> hash) -> string -> int -> t
+    dict:(int -> string option) -> key:(int63 -> key) -> string -> int -> t
 end
 
 module type S = sig
@@ -42,7 +43,7 @@ module type S = sig
   val add : 'a t -> value -> key Lwt.t
   (** Overwrite [add] to work with a read-only database handler. *)
 
-  val unsafe_add : 'a t -> key -> value -> unit Lwt.t
+  val unsafe_add : 'a t -> hash -> value -> key Lwt.t
   (** Overwrite [unsafe_add] to work with a read-only database handler. *)
 
   type index
@@ -56,7 +57,7 @@ module type S = sig
     read t Lwt.t
 
   val unsafe_append :
-    ensure_unique:bool -> overcommit:bool -> 'a t -> key -> value -> unit
+    ensure_unique:bool -> overcommit:bool -> 'a t -> hash -> value -> key
 
   val unsafe_mem : 'a t -> key -> bool
   val unsafe_find : check_integrity:bool -> 'a t -> key -> value option
@@ -84,13 +85,19 @@ module type S = sig
 end
 
 module type Maker = sig
-  type key
+  type hash
   type index
 
   (** Save multiple kind of values in the same pack file. Values will be
       distinguished using [V.magic], so they have to all be different. *)
-  module Make (V : Value with type hash := key) :
-    S with type key = key and type value = V.t and type index = index
+  module Make
+      (K : S.Key with type hash = hash)
+      (V : Value with type key := K.t and type hash := hash) :
+    S
+      with type key = K.t
+       and type value = V.t
+       and type index = index
+       and type hash = hash
 end
 
 module type Sigs = sig
@@ -98,12 +105,13 @@ module type Sigs = sig
   module type S = S
   module type Maker = Maker
 
-  module Maker
-      (_ : Version.S)
-      (Index : Pack_index.S)
-      (K : Irmin.Hash.S with type t = Index.key) :
-    Maker with type key = K.t and type index = Index.t
+  module Maker (_ : Version.S) (Index : Pack_index.S) :
+    Maker with type hash = Index.key and type index = Index.t
 
   module Closeable (CA : S) :
-    S with type key = CA.key and type value = CA.value and type index = CA.index
+    S
+      with type key = CA.key
+       and type value = CA.value
+       and type index = CA.index
+       and type hash = CA.hash
 end

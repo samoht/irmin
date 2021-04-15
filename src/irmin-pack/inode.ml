@@ -19,8 +19,8 @@ include Inode_intf
 
 module Make_internal
     (Conf : Conf.S)
-    (H : Irmin.Hash.S)
-    (Node : Irmin.Private.Node.S with type hash = H.t) =
+    (K : S.Key)
+    (Node : Irmin.Private.Node.S with type node = K.t and type contents = K.t) =
 struct
   let () =
     if Conf.entries > Conf.stable_hash then
@@ -28,13 +28,17 @@ struct
 
   module Node = struct
     include Node
-    module H = Irmin.Hash.Typed (H) (Node)
+    module H = Irmin.Hash.Typed (K.Hash) (Node)
 
     let hash = H.hash
   end
 
+  module H = K.Hash
+
   module T = struct
     type hash = H.t [@@deriving irmin]
+    type contents = Node.contents [@@deriving irmin]
+    type node = Node.node [@@deriving irmin]
     type step = Node.step [@@deriving irmin]
     type metadata = Node.metadata [@@deriving irmin]
 
@@ -43,8 +47,15 @@ struct
     type value = Node.value
 
     let value_t = Node.value_t
-    let pp_hash = Irmin.Type.(pp hash_t)
+    let pp_id = K.dump
+    let pp_hash = Irmin.Type.pp H.t
   end
+
+  type key = K.t
+  type hash = T.hash
+
+  let pp_hash = T.pp_hash
+  let pp_key = K.dump
 
   module StepMap = struct
     include Map.Make (struct
@@ -60,15 +71,17 @@ struct
   module Bin = struct
     open T
 
-    type ptr = { index : int; hash : H.t }
+    type ptr = { index : int; key : K.t }
     type tree = { depth : int; length : int; entries : ptr list }
     type v = Values of (step * value) list | Tree of tree
 
+    let key_t = Irmin.Type.map H.t K.v K.hash
+
     let ptr_t : ptr Irmin.Type.t =
       let open Irmin.Type in
-      record "Bin.ptr" (fun index hash -> { index; hash })
+      record "Bin.ptr" (fun index key -> { index; key })
       |+ field "index" int (fun t -> t.index)
-      |+ field "hash" H.t (fun (t : ptr) -> t.hash)
+      |+ field "key" key_t (fun (t : ptr) -> t.key)
       |> sealr
 
     let tree_t : tree Irmin.Type.t =
@@ -312,11 +325,11 @@ struct
 
     type _ layout =
       | Total : total_ptr layout
-      | Partial : (hash -> partial_ptr t option) -> partial_ptr layout
+      | Partial : (key -> partial_ptr t option) -> partial_ptr layout
       | Truncated : truncated_ptr layout
 
     and partial_ptr = {
-      target_hash : hash Lazy.t;
+      target_key : key Lazy.t;
       mutable target : partial_ptr t option;
     }
     (** [mutable target : partial_ptr t option] could be turned to
@@ -327,20 +340,20 @@ struct
 
     and total_ptr = Total_ptr of total_ptr t [@@unboxed]
 
-    and truncated_ptr = Broken of hash | Intact of truncated_ptr t
+    and truncated_ptr = Broken of key | Intact of truncated_ptr t
 
     and 'ptr tree = { depth : int; length : int; entries : 'ptr option array }
 
     and 'ptr v = Values of value StepMap.t | Tree of 'ptr tree
 
-    and 'ptr t = { hash : hash Lazy.t; stable : bool; v : 'ptr v }
+    and 'ptr t = { key : key Lazy.t; stable : bool; v : 'ptr v }
 
     module Ptr = struct
-      let hash : type ptr. ptr layout -> ptr -> _ = function
-        | Total -> fun (Total_ptr ptr) -> Lazy.force ptr.hash
-        | Partial _ -> fun { target_hash; _ } -> Lazy.force target_hash
+      let key : type ptr. ptr layout -> ptr -> _ = function
+        | Total -> fun (Total_ptr ptr) -> Lazy.force ptr.key
+        | Partial _ -> fun { target_key; _ } -> Lazy.force target_key
         | Truncated -> (
-            function Broken h -> h | Intact ptr -> Lazy.force ptr.hash)
+            function Broken h -> h | Intact ptr -> Lazy.force ptr.key)
 
       let target : type ptr. ptr layout -> ptr -> ptr t =
        fun layout ->
@@ -350,9 +363,9 @@ struct
             function
             | { target = Some entry; _ } -> entry
             | t -> (
-                let h = hash layout t in
-                match find h with
-                | None -> Fmt.failwith "%a: unknown key" pp_hash h
+                let id = key layout t in
+                match find id with
+                | None -> Fmt.failwith "%a: unknown key" pp_id id
                 | Some x ->
                     t.target <- Some x;
                     x))
@@ -367,18 +380,17 @@ struct
       let of_target : type ptr. ptr layout -> ptr t -> ptr = function
         | Total -> fun target -> Total_ptr target
         | Partial _ ->
-            fun target -> { target = Some target; target_hash = target.hash }
+            fun target -> { target = Some target; target_key = target.key }
         | Truncated -> fun target -> Intact target
 
-      let of_hash : type ptr. ptr layout -> hash -> ptr = function
+      let of_key : type ptr. ptr layout -> key -> ptr = function
         | Total -> assert false
-        | Partial _ -> fun hash -> { target = None; target_hash = lazy hash }
-        | Truncated -> fun hash -> Broken hash
+        | Partial _ -> fun k -> { target = None; target_key = lazy k }
+        | Truncated -> fun k -> Broken k
 
       let iter_if_loaded :
           type ptr.
-          broken:(hash -> unit) -> ptr layout -> (ptr t -> unit) -> ptr -> unit
-          =
+          broken:(key -> unit) -> ptr layout -> (ptr t -> unit) -> ptr -> unit =
        fun ~broken -> function
         | Total -> fun f (Total_ptr entry) -> f entry
         | Partial _ -> (
@@ -390,11 +402,11 @@ struct
     let pred layout t =
       match t.v with
       | Tree i ->
-          let hash_of_ptr = Ptr.hash layout in
+          let id_of_ptr = Ptr.key layout in
           Array.fold_left
             (fun acc -> function
               | None -> acc
-              | Some ptr -> `Inode (hash_of_ptr ptr) :: acc)
+              | Some ptr -> `Inode (id_of_ptr ptr) :: acc)
             [] i.entries
       | Values l ->
           StepMap.fold
@@ -474,14 +486,14 @@ struct
           let vs = StepMap.bindings vs in
           Bin.Values vs
       | Tree t ->
-          let hash_of_ptr = Ptr.hash layout in
+          let key_of_ptr = Ptr.key layout in
           let _, entries =
             Array.fold_left
               (fun (i, acc) -> function
                 | None -> (i + 1, acc)
                 | Some ptr ->
-                    let hash = hash_of_ptr ptr in
-                    (i + 1, { Bin.index = i; hash } :: acc))
+                    let key = key_of_ptr ptr in
+                    (i + 1, { Bin.index = i; key } :: acc))
               (0, []) t.entries
           in
           let entries = List.rev entries in
@@ -489,9 +501,11 @@ struct
 
     let to_bin layout t =
       let v = to_bin_v layout t.v in
-      Bin.v ~stable:t.stable ~hash:t.hash v
+      let hash = lazy (K.hash (Lazy.force t.key)) in
+      Bin.v ~stable:t.stable ~hash v
 
     module Concrete = struct
+      type hash = H.t [@@deriving irmin]
       type kind = Contents | Contents_x of metadata | Node [@@deriving irmin]
       type entry = { name : step; kind : kind; hash : hash } [@@deriving irmin]
 
@@ -505,20 +519,25 @@ struct
 
       let metadata_equal = Irmin.Type.(unstage (equal metadata_t))
 
-      let to_entry (name, v) =
+      let to_entry (name, (v : value)) =
         match v with
-        | `Contents (hash, m) ->
+        | `Contents (id, m) ->
+            let hash = K.hash id in
             if metadata_equal m Node.default then
               { name; kind = Contents; hash }
             else { name; kind = Contents_x m; hash }
-        | `Node hash -> { name; kind = Node; hash }
+        | `Node id ->
+            let hash = K.hash id in
+            { name; kind = Node; hash }
 
       let of_entry e =
         ( e.name,
+          (* FIXME: metadata? *)
+          let k = K.v e.hash in
           match e.kind with
-          | Contents -> `Contents (e.hash, Node.default)
-          | Contents_x m -> `Contents (e.hash, m)
-          | Node -> `Node e.hash )
+          | Contents -> `Contents (k, Node.default)
+          | Contents_x m -> `Contents (k, m)
+          | Node -> `Node k )
 
       type error =
         [ `Invalid_hash of hash * hash * t
@@ -560,7 +579,7 @@ struct
       let rec aux t =
         match t.v with
         | Tree tr ->
-            ( Lazy.force t.hash,
+            ( K.hash (Lazy.force t.key),
               Concrete.Tree
                 {
                   depth = tr.depth;
@@ -578,13 +597,13 @@ struct
                     |> List.rev;
                 } )
         | Values l ->
-            ( Lazy.force t.hash,
+            ( K.hash (Lazy.force t.key),
               Concrete.Value (List.map Concrete.to_entry (StepMap.bindings l))
             )
       in
       snd (aux t)
 
-    exception Invalid_hash of hash * hash * Concrete.t
+    exception Invalid_hash of H.t * H.t * Concrete.t
     exception Invalid_depth of int * int * Concrete.t
     exception Invalid_length of int * int * Concrete.t
     exception Empty
@@ -593,7 +612,7 @@ struct
     exception Unsorted_entries of Concrete.t
     exception Unsorted_pointers of Concrete.t
 
-    let hash_equal = Irmin.Type.(unstage (equal hash_t))
+    let hash_equal = Irmin.Type.(unstage (equal H.t))
 
     let of_concrete_exn t =
       let sort_entries =
@@ -629,7 +648,8 @@ struct
                 let hash = hash v in
                 if not (hash_equal hash pointer) then
                   raise (Invalid_hash (hash, pointer, t));
-                let t = { hash = lazy pointer; stable = false; v } in
+                (* FIXME: metadata? *)
+                let t = { key = lazy (K.v pointer); stable = false; v } in
                 entries.(index) <- Some (Ptr.of_target Total t))
               tr.pointers;
             let length = Concrete.length t in
@@ -640,13 +660,18 @@ struct
       in
       let v = aux 0 t in
       let length = length_of_v v in
-      let stable, hash =
-        if length > Conf.stable_hash then (false, hash v)
+      let stable, key =
+        if length > Conf.stable_hash then
+          (* FIXME: metadata? *)
+          let id = K.v (hash v) in
+          (false, id)
         else
           let node = Node.v (list_v Total v) in
-          (true, Node.hash node)
+          (* FIXME: metadata? *)
+          let id = K.v (Node.hash node) in
+          (true, id)
       in
-      { hash = lazy hash; stable; v }
+      { key = lazy key; stable; v }
 
     let of_concrete t =
       try Ok (of_concrete_exn t) with
@@ -659,7 +684,7 @@ struct
       | Unsorted_entries t -> Error (`Unsorted_entries t)
       | Unsorted_pointers t -> Error (`Unsorted_pointers t)
 
-    let hash t = Lazy.force t.hash
+    let hash t = K.hash (Lazy.force t.key)
 
     let is_root t =
       match t.v with
@@ -692,12 +717,14 @@ struct
         let n = length t in
         if n > Conf.stable_hash then t
         else
-          let hash =
+          let key =
             lazy
               (let vs = list layout t in
-               Node.hash (Node.v vs))
+               let metadata = K.metadata (Lazy.force t.key) in
+               let hash = Node.hash (Node.v vs) in
+               K.v ?metadata hash)
           in
-          { hash; stable = true; v = t.v }
+          { key; stable = true; v = t.v }
 
     let hash_key = Irmin.Type.(unstage (short_hash step_t))
     let index ~depth k = abs (hash_key ~seed:depth k) mod Conf.entries
@@ -713,32 +740,48 @@ struct
             Values vs
         | Tree t ->
             let entries = Array.make Conf.entries None in
-            let ptr_of_hash = Ptr.of_hash layout in
+            let ptr_of_key = Ptr.of_key layout in
             List.iter
-              (fun { Bin.index; hash } ->
-                entries.(index) <- Some (ptr_of_hash hash))
+              (fun { Bin.index; key } ->
+                entries.(index) <- Some (ptr_of_key key))
               t.entries;
             Tree { depth = t.Bin.depth; length = t.length; entries }
       in
-      { hash = t.Bin.hash; stable = t.Bin.stable; v }
+      let key =
+        lazy
+          (let hash = Lazy.force t.Bin.hash in
+           (* FIXME: metadata *)
+           K.v hash)
+      in
+      { key; stable = t.Bin.stable; v }
 
     let empty : 'a. 'a layout -> 'a t =
      fun _ ->
-      let hash = lazy (Node.hash Node.empty) in
-      { stable = true; hash; v = Values StepMap.empty }
+      let key = lazy (K.v (Node.hash Node.empty)) in
+      { stable = true; key; v = Values StepMap.empty }
 
     let values layout vs =
       let length = StepMap.cardinal vs in
       if length = 0 then empty layout
       else
         let v = Values vs in
-        let hash = lazy (Bin.V.hash (to_bin_v layout v)) in
-        { hash; stable = false; v }
+        let key =
+          lazy
+            (let hash = Bin.V.hash (to_bin_v layout v) in
+             (* FIXME: metadata *)
+             K.v hash)
+        in
+        { key; stable = false; v }
 
     let tree layout is =
       let v = Tree is in
-      let hash = lazy (Bin.V.hash (to_bin_v layout v)) in
-      { hash; stable = false; v }
+      let key =
+        lazy
+          (let hash = Bin.V.hash (to_bin_v layout v) in
+           (* FIXME: metadata *)
+           K.v hash)
+      in
+      { key; stable = false; v }
 
     let of_values layout l = values layout (StepMap.of_list l)
 
@@ -869,7 +912,7 @@ struct
               "You are trying to save to the backend an inode deserialized \
                using [Irmin.Type] that used to contain pointer(s) to inodes \
                which are unknown to the backend. Hash: %a"
-              pp_hash h
+              pp_id h
           else
             (* The backend already knows this target inode, there is no need to
                traverse further down. This happens during the unit tests. *)
@@ -881,16 +924,24 @@ struct
       let rec aux ~depth t =
         Log.debug (fun l -> l "save depth:%d" depth);
         match t.v with
-        | Values _ -> add (Lazy.force t.hash) (to_bin layout t)
+        | Values _ ->
+            (* FIXME: use the offset to check if [add] is needed. *)
+            let hash = K.hash (Lazy.force t.key) in
+            let _ = add hash (to_bin layout t) in
+            ()
         | Tree n ->
             iter_entries
               (fun t ->
-                let hash = Lazy.force t.hash in
-                if mem hash then () else aux ~depth:(depth + 1) t)
+                let id = Lazy.force t.key in
+                if mem id then () else aux ~depth:(depth + 1) t)
               n.entries;
-            add (Lazy.force t.hash) (to_bin layout t)
+            (* FIXME: use the offset to check if [add] is needed. *)
+            let hash = K.hash (Lazy.force t.key) in
+            let _ = add hash (to_bin layout t) in
+            ()
       in
-      aux ~depth:0 t
+      aux ~depth:0 t;
+      Lazy.force t.key
 
     let check_stable layout t =
       let target_of_ptr = Ptr.target layout in
@@ -927,6 +978,7 @@ struct
   end
 
   module Raw = struct
+    type key = K.t
     type hash = H.t
     type t = Bin.t
 
@@ -941,30 +993,31 @@ struct
     let encode_compress = Irmin.Type.(unstage (encode_bin Compress.t))
     let decode_compress = Irmin.Type.(unstage (decode_bin Compress.t))
 
-    let encode_bin ~dict ~offset (t : t) k =
+    let encode_bin ~dict ~offset (t : t) (k : K.t) =
       let step s : Compress.name =
         let str = step_to_bin s in
         if String.length str <= 3 then Direct s
         else match dict str with Some i -> Indirect i | None -> Direct s
       in
-      let hash h : Compress.address =
-        match offset h with
-        | None -> Compress.Direct h
+      let address k : Compress.address =
+        (* FIXME: look at the metadata first *)
+        match offset k with
+        | None -> Compress.Direct (K.hash k)
         | Some off -> Compress.Indirect off
       in
       let ptr : Bin.ptr -> Compress.ptr =
        fun n ->
-        let hash = hash n.hash in
+        let hash = address n.key in
         { index = n.index; hash }
       in
       let value : T.step * T.value -> Compress.value = function
         | s, `Contents (c, m) ->
             let s = step s in
-            let v = hash c in
+            let v = address c in
             Compress.Contents (s, v, m)
         | s, `Node n ->
             let s = step s in
-            let v = hash n in
+            let v = address n in
             Compress.Node (s, v)
       in
       (* List.map is fine here as the number of entries is small *)
@@ -974,12 +1027,12 @@ struct
             let entries = List.map ptr entries in
             Tree { Compress.depth; length; entries }
       in
-      let t = Compress.v ~stable:t.stable ~hash:k (v t.v) in
+      let t = Compress.v ~stable:t.stable ~hash:(K.hash k) (v t.v) in
       encode_compress t
 
     exception Exit of [ `Msg of string ]
 
-    let decode_bin_with_offset ~dict ~hash t off : int * t =
+    let decode_bin_with_offset ~dict ~key t off : int * t =
       let off, i = decode_compress t off in
       let step : Compress.name -> T.step = function
         | Direct n -> n
@@ -991,24 +1044,26 @@ struct
                 | Error e -> raise_notrace (Exit e)
                 | Ok v -> v))
       in
-      let hash : Compress.address -> H.t = function
-        | Indirect off -> hash off
-        | Direct n -> n
+      let key : Compress.address -> K.t = function
+        | Indirect off -> key off
+        | Direct n ->
+            (* No offset information. *)
+            K.v n
       in
       let ptr : Compress.ptr -> Bin.ptr =
        fun n ->
-        let hash = hash n.hash in
-        { index = n.index; hash }
+        let key = key n.hash in
+        { index = n.index; key }
       in
       let value : Compress.value -> T.step * T.value = function
         | Contents (n, h, metadata) ->
             let name = step n in
-            let hash = hash h in
-            (name, `Contents (hash, metadata))
+            let k = key h in
+            (name, `Contents (k, metadata))
         | Node (n, h) ->
             let name = step n in
-            let hash = hash h in
-            (name, `Node hash)
+            let k = key h in
+            (name, `Node k)
       in
       let t : Compress.v -> Bin.v = function
         | Values vs -> Values (List.rev_map value (List.rev vs))
@@ -1019,16 +1074,11 @@ struct
       let t = Bin.v ~stable:i.stable ~hash:(lazy i.hash) (t i.v) in
       (off, t)
 
-    let decode_bin ~dict ~hash t off =
-      decode_bin_with_offset ~dict ~hash t off |> snd
+    let decode_bin ~dict ~key t off =
+      decode_bin_with_offset ~dict ~key t off |> snd
   end
 
-  type hash = T.hash
-
-  let pp_hash = T.pp_hash
-
-  let decode_raw ~dict ~hash t off =
-    Raw.decode_bin_with_offset ~dict ~hash t off
+  let decode_raw ~dict ~key t off = Raw.decode_bin_with_offset ~dict ~key t off
 
   module Val = struct
     include T
@@ -1152,22 +1202,26 @@ struct
 end
 
 module Make_ext
-    (H : Irmin.Hash.S)
-    (Node : Irmin.Private.Node.S with type hash = H.t)
+    (K : S.Key)
+    (Node : Irmin.Private.Node.S with type node = K.t and type contents = K.t)
     (Inter : Internal
-               with type hash = H.t
+               with type key = K.t
+                and type hash = K.hash
                 and type Val.metadata = Node.metadata
-                and type Val.step = Node.step)
+                and type Val.step = Node.step
+                and type Val.node = K.t
+                and type Val.contents = Node.contents)
     (CA : Content_addressable.Maker
-            with type key = H.t
-             and type index = Pack_index.Make(H).t) =
+            with type hash = K.hash
+             and type index = Pack_index.Make(K.Hash).t) =
 struct
-  module Key = H
-  module Pack = CA.Make (Inter.Raw)
+  module Key = K
+  module Pack = CA.Make (K) (Inter.Raw)
   module Val = Inter.Val
 
   type 'a t = 'a Pack.t
   type key = Key.t
+  type hash = Key.hash
   type value = Inter.Val.t
   type index = Pack.index
 
@@ -1181,6 +1235,7 @@ struct
         let v = Val.of_raw find v in
         Some v
 
+  (* FIXME: better name *)
   let save t v =
     let add k v =
       Pack.unsafe_append ~ensure_unique:true ~overcommit:false t k v
@@ -1188,12 +1243,8 @@ struct
     Val.save ~add ~mem:(Pack.unsafe_mem t) v
 
   let hash v = Val.hash v
-
-  let add t v =
-    save t v;
-    Lwt.return (hash v)
-
-  let equal_hash = Irmin.Type.(unstage (equal H.t))
+  let add t v = Lwt.return (save t v)
+  let equal_hash = Irmin.Type.(unstage (equal K.Hash.t))
 
   let check_hash expected got =
     if equal_hash expected got then ()
@@ -1203,8 +1254,7 @@ struct
 
   let unsafe_add t k v =
     check_hash k (hash v);
-    save t v;
-    Lwt.return_unit
+    Lwt.return (save t v)
 
   let batch = Pack.batch
   let v = Pack.v
@@ -1214,8 +1264,8 @@ struct
   let clear = Pack.clear
   let clear_caches = Pack.clear_caches
 
-  let decode_bin ~dict ~hash buff off =
-    Inter.decode_raw ~dict ~hash buff off |> fst
+  let decode_bin ~dict ~key buff off =
+    Inter.decode_raw ~dict ~key buff off |> fst
 
   let integrity_check_inodes t k =
     find t k >|= function
@@ -1233,12 +1283,12 @@ end
 
 module Make
     (Conf : Conf.S)
-    (H : Irmin.Hash.S)
+    (K : S.Key)
     (CA : Content_addressable.Maker
-            with type key = H.t
-             and type index = Pack_index.Make(H).t)
-    (Node : Irmin.Private.Node.S with type hash = H.t) =
+            with type hash = K.hash
+             and type index = Pack_index.Make(K.Hash).t)
+    (Node : Irmin.Private.Node.S with type node = K.t and type contents = K.t) =
 struct
-  module Inter = Make_internal (Conf) (H) (Node)
-  include Make_ext (H) (Node) (Inter) (CA)
+  module Inter = Make_internal (Conf) (K) (Node)
+  include Make_ext (K) (Node) (Inter) (CA)
 end

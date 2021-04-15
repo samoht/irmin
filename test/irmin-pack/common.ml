@@ -15,7 +15,16 @@
  *)
 
 open Irmin.Export_for_backends
-module Int63 = Optint.Int63
+
+module Int63 = struct
+  include Optint.Int63
+
+  let t : t Irmin.Type.t =
+    let open Irmin.Type in
+    (map int64) of_int64 to_int64
+    |> like ~pp:Optint.Int63.pp ~equal:(stage Optint.Int63.equal)
+         ~compare:(stage Optint.Int63.compare)
+end
 
 module Dict = Irmin_pack.Dict.Make (struct
   let version = `V2
@@ -43,6 +52,11 @@ module Conf = struct
   let stable_hash = 256
 end
 
+module H = Irmin.Hash.SHA1
+module I = Index
+module K = Irmin.Key.Make (H) (Int63)
+module Index = Irmin_pack.Index.Make (K.Hash)
+
 module S = struct
   include Irmin.Contents.String
 
@@ -53,24 +67,20 @@ module S = struct
   let hash = H.hash
   let encode_pair = Irmin.Type.(unstage (encode_bin (pair H.t t)))
   let decode_pair = Irmin.Type.(unstage (decode_bin (pair H.t t)))
-  let encode_bin ~dict:_ ~offset:_ x k = encode_pair (k, x)
+  let encode_bin ~dict:_ ~offset:_ x k = encode_pair (K.hash k, x)
 
-  let decode_bin ~dict:_ ~hash:_ x off =
+  let decode_bin ~dict:_ ~key:_ x off =
     let _, (_, v) = decode_pair x off in
     v
 end
-
-module H = Irmin.Hash.SHA1
-module I = Index
-module Index = Irmin_pack.Index.Make (H)
 
 module V2 = struct
   let version = `V2
 end
 
-module P = Irmin_pack.Content_addressable.Maker (V2) (Index) (H)
-module Pack = P.Make (S)
-module Branch = Irmin_pack.Atomic_write.Make (V2) (Irmin.Branch.String) (H)
+module P = Irmin_pack.Content_addressable.Maker (V2) (Index)
+module Pack = P.Make (K) (S)
+module Branch = Irmin_pack.Atomic_write.Make (V2) (Irmin.Branch.String) (K)
 
 module Make_context (Config : sig
   val root : string

@@ -81,6 +81,8 @@ module type S = sig
   val reconstruct_index : ?output:string -> Irmin.config -> unit
 end
 
+module type Key = Irmin.Key.S with type metadata = int63
+
 module type Maker = sig
   type endpoint = unit
 

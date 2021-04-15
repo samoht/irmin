@@ -15,10 +15,17 @@
  *)
 
 open Irmin.Perms
-module Int63 = Optint.Int63
+
+module Int63 : sig
+  type t = Optint.Int63.t
+
+  include module type of Optint.Int63 with type t := t
+end
+
 module Dict : Irmin_pack.Dict.S
 module H = Irmin.Hash.SHA1
 module I = Index
+module K : Irmin_pack.Key with type hash = H.t
 
 module Filename : sig
   include module type of Filename
@@ -44,14 +51,15 @@ module Index : Irmin_pack.Index.S with type key = H.t
 
 module Pack :
   Irmin_pack.Content_addressable.S
-    with type key = H.t
+    with type key = K.t
+     and type hash = K.hash
      and type value = string
      and type index = Index.t
 
 module P :
   Irmin_pack.Content_addressable.Maker
-    with type key = H.t
-     and type index = Irmin_pack.Index.Make(H).t
+    with type hash = H.t
+     and type index = Irmin_pack.Index.Make(K.Hash).t
 
 (** Helper constructors for fresh pre-initialised dictionaries and packs *)
 module Make_context (Config : sig

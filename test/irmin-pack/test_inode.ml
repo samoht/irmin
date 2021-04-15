@@ -31,10 +31,10 @@ let log_size = 1000
 
 module Path = Irmin.Path.String_list
 module Metadata = Irmin.Metadata.None
-module Node = Irmin.Private.Node.Make (H) (Path) (Metadata)
-module Index = Irmin_pack.Index.Make (H)
-module Inter = Irmin_pack.Inode.Make_internal (Conf) (H) (Node)
-module Inode = Irmin_pack.Inode.Make_ext (H) (Node) (Inter) (P)
+module Node = Irmin.Private.Node.Make (H) (K) (K) (Path) (Metadata)
+module Index = Irmin_pack.Index.Make (K.Hash)
+module Inter = Irmin_pack.Inode.Make_internal (Conf) (K) (Node)
+module Inode = Irmin_pack.Inode.Make_ext (K) (Node) (Inter) (P)
 
 module Context = struct
   type t = {
@@ -58,7 +58,9 @@ module Context = struct
     Inode.close t.store
 end
 
-type pred = [ `Contents of H.t | `Inode of H.t | `Node of H.t ]
+type key = K.t [@@deriving irmin]
+
+type pred = [ `Contents of key | `Inode of key | `Node of key ]
 [@@deriving irmin]
 
 let pp_pred = Irmin.Type.pp pred_t
@@ -72,11 +74,11 @@ module H_contents =
       let t = Irmin.Type.string
     end)
 
-let normal x = `Contents (x, Metadata.default)
-let node x = `Node x
+let normal x = `Contents (K.v x, Metadata.default)
+let node x = `Node (K.v x)
 let foo = H_contents.hash "foo"
 let bar = H_contents.hash "bar"
-let check_hash = Alcotest.check_repr Inode.Val.hash_t
+let check_hash = Alcotest.check_repr H.t
 let check_values = Alcotest.check_repr Inode.Val.t
 
 (* Exhaustive inode structure generator *)
@@ -209,10 +211,10 @@ end
 let check_node msg v t =
   let h = Inter.Val.hash v in
   let+ h' = Inode.batch t.Context.store (fun i -> Inode.add i v) in
-  check_hash msg h h'
+  check_hash msg h (K.hash h')
 
 let check_hardcoded_hash msg h v =
-  h |> Irmin.Type.of_string Inode.Val.hash_t |> function
+  h |> Irmin.Type.of_string H.t |> function
   | Error (`Msg str) -> Alcotest.failf "hash of string failed: %s" str
   | Ok hash -> check_hash msg hash (Inter.Val.hash v)
 

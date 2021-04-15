@@ -19,7 +19,8 @@ open! Import
 module type Value = sig
   include Irmin.Private.Node.S
 
-  val pred : t -> [ `Node of hash | `Inode of hash | `Contents of hash ] list
+  val pred :
+    t -> [ `Node of node | `Inode of node | `Contents of contents ] list
 end
 
 module type S = sig
@@ -35,15 +36,18 @@ module type S = sig
     string ->
     read t Lwt.t
 
-  module Key : Irmin.Hash.S with type t = key
-  module Val : Value with type t = value and type hash = key
+  module Key : S.Key with type t = key and type hash = hash
+
+  module Val :
+    Value with type t = value and type node = key and type contents = key
+
   include S.Checkable with type 'a t := 'a t and type key := key
 
   val sync : ?on_generation_change:(unit -> unit) -> 'a t -> unit
   val clear_caches : 'a t -> unit
 
   val decode_bin :
-    dict:(int -> string option) -> hash:(int63 -> key) -> string -> int -> int
+    dict:(int -> string option) -> key:(int63 -> key) -> string -> int -> int
 
   val integrity_check_inodes : [ `Read ] t -> key -> (unit, string) result Lwt.t
 end
@@ -51,25 +55,28 @@ end
 (** Unstable internal API agnostic about the underlying storage. Use it only to
     implement or test inodes. *)
 module type Internal = sig
+  type key
   type hash
 
+  val pp_key : key Fmt.t
   val pp_hash : hash Fmt.t
 
-  module Raw : Content_addressable.Value with type hash = hash
+  module Raw :
+    Content_addressable.Value with type key = key and type hash = hash
 
   val decode_raw :
     dict:(int -> string option) ->
-    hash:(int63 -> hash) ->
+    key:(int63 -> key) ->
     string ->
     int ->
     int * Raw.t
 
   module Val : sig
-    include Value with type hash = hash
+    include Value with type node = key and type contents = key
 
-    val of_raw : (hash -> Raw.t option) -> Raw.t -> t
+    val of_raw : (key -> Raw.t option) -> Raw.t -> t
     val to_raw : t -> Raw.t
-    val save : add:(hash -> Raw.t -> unit) -> mem:(hash -> bool) -> t -> unit
+    val save : add:(hash -> Raw.t -> key) -> mem:(key -> bool) -> t -> key
     val hash : t -> hash
     val stable : t -> bool
     val length : t -> int
@@ -131,44 +138,49 @@ module type Sigs = sig
 
   module Make_internal
       (Conf : Conf.S)
-      (H : Irmin.Hash.S)
-      (Node : Irmin.Private.Node.S with type hash = H.t) :
+      (K : S.Key)
+      (Node : Irmin.Private.Node.S with type node = K.t and type contents = K.t) :
     Internal
-      with type hash = H.t
+      with type key = K.t
+       and type hash = K.hash
        and type Val.metadata = Node.metadata
        and type Val.step = Node.step
 
   module Make_ext
-      (H : Irmin.Hash.S)
-      (Node : Irmin.Private.Node.S with type hash = H.t)
+      (K : S.Key)
+      (Node : Irmin.Private.Node.S with type node = K.t and type contents = K.t)
       (Inter : Internal
-                 with type hash = H.t
+                 with type key = K.t
+                  and type hash = K.hash
                   and type Val.metadata = Node.metadata
                   and type Val.step = Node.step)
       (_ : Content_addressable.Maker
-             with type key = H.t
-              and type index = Pack_index.Make(H).t) : sig
+             with type hash = K.hash
+              and type index = Pack_index.Make(K.Hash).t) : sig
     include
       S
-        with type key = H.t
+        with type key = K.t
+         and type hash = K.hash
          and type Val.metadata = Node.metadata
          and type Val.step = Node.step
-         and type index = Pack_index.Make(H).t
+         and type index = Pack_index.Make(K.Hash).t
          and type value = Inter.Val.t
   end
 
   module Make
       (_ : Conf.S)
-      (H : Irmin.Hash.S)
+      (K : S.Key)
       (_ : Content_addressable.Maker
-             with type key = H.t
-              and type index = Pack_index.Make(H).t)
-      (Node : Irmin.Private.Node.S with type hash = H.t) : sig
+             with type hash = K.hash
+              and type index = Pack_index.Make(K.Hash).t)
+      (Node : Irmin.Private.Node.S with type node = K.t and type contents = K.t) : sig
     include
       S
-        with type key = H.t
+        with type key = K.t
+         and type hash = K.hash
+         and type index = Pack_index.Make(K.Hash).t
          and type Val.metadata = Node.metadata
          and type Val.step = Node.step
-         and type index = Pack_index.Make(H).t
+         and type Val.contents = Node.contents
   end
 end

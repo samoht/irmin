@@ -24,17 +24,15 @@ module Table (K : Irmin.Hash.S) = Hashtbl.Make (struct
   let equal = Irmin.Type.(unstage (equal K.t))
 end)
 
-module Maker
-    (V : Version.S)
-    (Index : Pack_index.S)
-    (K : Irmin.Hash.S with type t = Index.key) =
-struct
+module type Key = Irmin.Key.S with type metadata = int63
+
+module Maker (V : Version.S) (Index : Pack_index.S) = struct
   module IO_cache = IO.Cache
   module IO = IO.Unix
-  module Tbl = Table (K)
   module Dict = Pack_dict.Make (V)
 
   type index = Index.t
+  type hash = Index.key
 
   type 'a t = {
     mutable block : IO.t;
@@ -66,8 +64,6 @@ struct
   let IO_cache.{ v } =
     IO_cache.memoize ~clear ~valid ~v:(fun index -> unsafe_v ~index) Layout.pack
 
-  type key = K.t
-
   let close t =
     t.open_instances <- t.open_instances - 1;
     if t.open_instances = 0 then (
@@ -75,31 +71,36 @@ struct
       IO.close t.block;
       Dict.close t.dict)
 
-  module Make (Val : Value with type hash := K.t) = struct
-    module H = struct
-      include K
+  module Make
+      (K : S.Key with type hash = hash)
+      (Val : Value with type key := K.t and type hash := hash) =
+  struct
+    module Tbl = Table (K.Hash)
 
-      let hash = K.short_hash
-      let equal = Irmin.Type.(unstage (equal K.t))
-    end
+    module Lru = Irmin.Private.Lru.Make (struct
+      include K.Hash
 
-    module Tbl = Table (K)
-    module Lru = Irmin.Private.Lru.Make (H)
+      let hash = K.Hash.short_hash
+      let equal = Irmin.Type.(unstage (equal K.Hash.t))
+    end)
+
+    type kind = [ `Commit | `Node | `Contents ]
 
     type nonrec 'a t = {
+      kind : kind;
       pack : 'a t;
-      lru : Val.t Lru.t;
-      staging : Val.t Tbl.t;
+      lru : (K.t * Val.t) Lru.t;
+      staging : (K.t * Val.t) Tbl.t;
       mutable open_instances : int;
       readonly : bool;
     }
 
     type key = K.t
-
-    let equal_key = Irmin.Type.(unstage (equal K.t))
-
+    type hash = K.hash
     type value = Val.t
     type index = Index.t
+
+    let equal_hash = Irmin.Type.(unstage (equal K.Hash.t))
 
     let unsafe_clear ?keep_generation t =
       clear ?keep_generation t.pack;
@@ -150,27 +151,29 @@ struct
       let t = unsafe_v ?fresh ?readonly ?lru_size ~index root in
       Lwt.return t
 
-    let pp_hash = Irmin.Type.pp K.t
-    let decode_key = Irmin.Type.(unstage (decode_bin K.t))
+    let pp_key = Irmin.Type.pp K.t
+    let pp_hash = Irmin.Type.pp K.Hash.t
+    let decode_hash = Irmin.Type.(unstage (decode_bin K.Hash.t))
 
     let io_read_and_decode_hash ~off t =
-      let buf = Bytes.create K.hash_size in
+      let buf = Bytes.create K.Hash.hash_size in
       let n = IO.read t.pack.block ~off buf in
-      assert (n = K.hash_size);
-      let _, v = decode_key (Bytes.unsafe_to_string buf) 0 in
-      v
+      assert (n = K.Hash.hash_size);
+      let _, h = decode_hash (Bytes.unsafe_to_string buf) 0 in
+      K.v ~metadata:off h
+
+    let mem_hash t h =
+      Tbl.mem t.staging h || Lru.mem t.lru h || Index.mem t.pack.index h
 
     let unsafe_mem t k =
-      Log.debug (fun l -> l "[pack] mem %a" pp_hash k);
-      Tbl.mem t.staging k || Lru.mem t.lru k || Index.mem t.pack.index k
+      Log.debug (fun l -> l "[pack] mem %a" pp_key k);
+      mem_hash t (K.hash k)
 
-    let mem t k =
-      let b = unsafe_mem t k in
-      Lwt.return b
+    let mem t k = Lwt.return (unsafe_mem t k)
 
     let check_key k v =
-      let k' = Val.hash v in
-      if equal_key k k' then Ok () else Error (k, k')
+      let h = Val.hash v in
+      if equal_hash (K.hash k) h then Ok () else Error (k, h)
 
     exception Invalid_read
 
@@ -180,44 +183,48 @@ struct
       let buf = Bytes.create len in
       let n = IO.read t.pack.block ~off buf in
       if n <> len then raise Invalid_read;
-      let hash off = io_read_and_decode_hash ~off t in
+      let key off = io_read_and_decode_hash ~off t in
       let dict = Dict.find t.pack.dict in
-      Val.decode_bin ~hash ~dict (Bytes.unsafe_to_string buf) 0
+      Val.decode_bin ~key ~dict (Bytes.unsafe_to_string buf) 0
 
     let pp_io ppf t =
       let name = Filename.basename (Filename.dirname (IO.name t.pack.block)) in
       let mode = if t.readonly then ":RO" else "" in
       Fmt.pf ppf "%s%s" name mode
 
-    let unsafe_find ~check_integrity t k =
-      Log.debug (fun l -> l "[pack:%a] find %a" pp_io t pp_hash k);
+    let find_hash ~not_in_caches t h =
+      Log.debug (fun l -> l "[pack:%a] find %a" pp_io t pp_hash h);
       Stats.incr_finds ();
-      match Tbl.find t.staging k with
+      match Tbl.find t.staging h with
       | v ->
-          Lru.add t.lru k v;
+          Lru.add t.lru h v;
           Some v
       | exception Not_found -> (
-          match Lru.find t.lru k with
+          match Lru.find t.lru h with
           | v -> Some v
-          | exception Not_found -> (
+          | exception Not_found ->
               Stats.incr_cache_misses ();
-              match Index.find t.pack.index k with
-              | None -> None
-              | Some (off, len, _) ->
-                  let v = io_read_and_decode ~off ~len t in
-                  (if check_integrity then
-                   check_key k v |> function
-                   | Ok () -> ()
-                   | Error (expected, got) ->
-                       Fmt.failwith "corrupted value: got %a, expecting %a."
-                         pp_hash got pp_hash expected);
-                  Lru.add t.lru k v;
-                  Some v))
+              not_in_caches ())
 
-    let find t k =
-      let v = unsafe_find ~check_integrity:true t k in
-      Lwt.return v
+    let unsafe_find ~check_integrity t k =
+      let h = K.hash k in
+      let not_in_caches () =
+        match Index.find t.pack.index h with
+        | None -> None
+        | Some (off, len, _) ->
+            let v = io_read_and_decode ~off ~len t in
+            (if check_integrity then
+             check_key k v |> function
+             | Ok () -> ()
+             | Error (expected, got) ->
+                 Fmt.failwith "corrupted value: got %a, expecting %a." pp_hash
+                   got pp_key expected);
+            Lru.add t.lru h (k, v);
+            Some (k, v)
+      in
+      find_hash ~not_in_caches t h |> Option.map snd
 
+    let find t k = Lwt.return (unsafe_find ~check_integrity:true t k)
     let cast t = (t :> read_write t)
 
     let integrity_check ~offset ~length k t =
@@ -237,12 +244,11 @@ struct
 
     let auto_flush = 1024
 
-    let unsafe_append ~ensure_unique ~overcommit t k v =
-      if ensure_unique && unsafe_mem t k then ()
-      else (
-        Log.debug (fun l -> l "[pack] append %a" pp_hash k);
+    let unsafe_append ~ensure_unique ~overcommit t h v =
+      let append () =
+        Log.debug (fun l -> l "[pack] append %a" pp_hash h);
         let offset k =
-          match Index.find t.pack.index k with
+          match Index.find t.pack.index (K.hash k) with
           | None ->
               Stats.incr_appended_hashes ();
               None
@@ -252,21 +258,29 @@ struct
         in
         let dict = Dict.index t.pack.dict in
         let off = IO.offset t.pack.block in
+        let k = K.v ~metadata:off h in
         Val.encode_bin ~offset ~dict v k (IO.append t.pack.block);
         let len = Int63.to_int (IO.offset t.pack.block -- off) in
-        Index.add ~overcommit t.pack.index k (off, len, Val.magic v);
+        Index.add ~overcommit t.pack.index h (off, len, Val.magic v);
         if Tbl.length t.staging >= auto_flush then flush t
-        else Tbl.add t.staging k v;
-        Lru.add t.lru k v)
+        else Tbl.add t.staging h (k, v);
+        Lru.add t.lru h (k, v);
+        k
+      in
+      if not ensure_unique then append ()
+      else
+        match find_hash t h ~not_in_caches:(fun () -> None) with
+        | None -> append ()
+        | Some (k, _) -> k
 
     let add t v =
-      let k = Val.hash v in
-      unsafe_append ~ensure_unique:true ~overcommit:true t k v;
+      let h = Val.hash v in
+      let k = unsafe_append ~ensure_unique:true ~overcommit:true t h v in
       Lwt.return k
 
-    let unsafe_add t k v =
-      unsafe_append ~ensure_unique:true ~overcommit:true t k v;
-      Lwt.return ()
+    let unsafe_add t h v =
+      let k = unsafe_append ~ensure_unique:true ~overcommit:true t h v in
+      Lwt.return k
 
     let unsafe_close t =
       t.open_instances <- t.open_instances - 1;
@@ -322,6 +336,7 @@ end
 module Closeable (S : S) = struct
   type 'a t = { closed : bool ref; t : 'a S.t }
   type key = S.key
+  type hash = S.hash
   type value = S.value
   type index = S.index
 

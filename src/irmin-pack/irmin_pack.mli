@@ -84,3 +84,12 @@ module Content_addressable = Content_addressable
 module Atomic_write = Atomic_write
 module IO = IO
 module Utils = Utils
+
+(** Keys *)
+
+module type Key = sig
+  include S.Key
+  (** @inline *)
+end
+
+module Key (H : Irmin.Hash.S) : Key with type hash = H.t

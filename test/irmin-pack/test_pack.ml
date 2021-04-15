@@ -35,11 +35,13 @@ let suite =
   let store =
     Irmin_test.store (module Irmin_pack_maker) (module Irmin.Metadata.None)
   in
+  (*
   let layered_store =
     Irmin_test.layered_store
       (module Irmin_pack_layered.Maker (Config))
       (module Irmin.Metadata.None)
   in
+ *)
   let config = Irmin_pack.config ~fresh:false ~lru_size:0 test_dir in
   let init () =
     if Sys.file_exists test_dir then (
@@ -65,7 +67,7 @@ let suite =
     let* repo = S.Repo.v config in
     clear repo >>= fun () ->
     S.Repo.close repo >>= fun () ->
-    let (module S : Irmin_test.Layered_store) = layered_store in
+    (*    let (module S : Irmin_test.Layered_store) = layered_store in *)
     let module P = S.Private in
     let clear repo =
       P.Commit.clear (P.Repo.commit_t repo) >>= fun () ->
@@ -85,7 +87,7 @@ let suite =
     config;
     store;
     stats;
-    layered_store = Some layered_store;
+    layered_store = None (* Some layered_store *);
   }
 
 module Context = Make_context (struct
@@ -243,17 +245,19 @@ module Pack = struct
     let* () =
       Pack.batch t.pack (fun w ->
           Lwt_list.iter_s
-            (fun (k, v) -> Pack.unsafe_add w k v)
+            (fun (k, v) ->
+              let+ _ = Pack.unsafe_add w k v in
+              ())
             [ (h1, x1); (h2, x2); (h3, x3); (h4, x4) ])
     in
     let test t =
-      let* y1 = Pack.find t h1 >|= get in
+      let* y1 = Pack.find t (K.v h1) >|= get in
       Alcotest.(check string) "x1" x1 y1;
-      let* y3 = Pack.find t h3 >|= get in
+      let* y3 = Pack.find t (K.v h3) >|= get in
       Alcotest.(check string) "x3" x3 y3;
-      let* y2 = Pack.find t h2 >|= get in
+      let* y2 = Pack.find t (K.v h2) >|= get in
       Alcotest.(check string) "x2" x2 y2;
-      let* y4 = Pack.find t h4 >|= get in
+      let* y4 = Pack.find t (K.v h4) >|= get in
       Alcotest.(check string) "x4" x4 y4;
       Lwt.return_unit
     in
@@ -269,7 +273,10 @@ module Pack = struct
       let adds l =
         List.iter
           (fun (k, v) ->
-            Pack.unsafe_append ~ensure_unique:true ~overcommit:false w k v)
+            let _ =
+              Pack.unsafe_append ~ensure_unique:true ~overcommit:false w k v
+            in
+            ())
           l
       in
       let x1 = "foo" in
@@ -277,11 +284,11 @@ module Pack = struct
       let h1 = sha1 x1 in
       let h2 = sha1 x2 in
       adds [ (h1, x1); (h2, x2) ];
-      let* y2 = Pack.find r h2 in
+      let* y2 = Pack.find r (K.v h2) in
       Alcotest.(check (option string)) "before sync" None y2;
       Pack.flush w;
       Pack.sync r;
-      let* y2 = Pack.find r h2 in
+      let* y2 = Pack.find r (K.v h2) in
       Alcotest.(check (option string)) "after sync" (Some x2) y2;
       let x3 = "otoo" in
       let x4 = "sdadsadas" in
@@ -290,9 +297,9 @@ module Pack = struct
       adds [ (h3, x3); (h4, x4) ];
       Pack.flush w;
       Pack.sync r;
-      let* y2 = Pack.find r h2 in
+      let* y2 = Pack.find r (K.v h2) in
       Alcotest.(check (option string)) "y2" (Some x2) y2;
-      let* y3 = Pack.find r h3 in
+      let* y3 = Pack.find r (K.v h3) in
       Alcotest.(check (option string)) "y3" (Some x3) y3;
       Lwt.return_unit
     in
@@ -305,8 +312,10 @@ module Pack = struct
     let* w1 = Pack.v ~fresh:true ~index (Context.fresh_name "pack") in
     let x1 = "foo" in
     let h1 = sha1 x1 in
-    Pack.unsafe_append ~ensure_unique:true ~overcommit:false w1 h1 x1;
-    let* y1 = Pack.find w1 h1 >|= get in
+    let k1 =
+      Pack.unsafe_append ~ensure_unique:true ~overcommit:false w1 h1 x1
+    in
+    let* y1 = Pack.find w1 k1 >|= get in
     Alcotest.(check string) "x1" x1 y1;
     Index.close index;
     Pack.close w1
@@ -317,23 +326,23 @@ module Pack = struct
     let w = t.pack in
     let x1 = "foo" in
     let h1 = sha1 x1 in
-    Pack.unsafe_append ~ensure_unique:true ~overcommit:false w h1 x1;
+    let k1 = Pack.unsafe_append ~ensure_unique:true ~overcommit:false w h1 x1 in
     Pack.flush w;
     Index.close t.index;
     Pack.close w >>= fun () ->
     (*open and close in ro*)
     let* i1, w1 = t.clone_index_pack ~readonly:true in
-    let* y1 = Pack.find w1 h1 >|= get in
+    let* y1 = Pack.find w1 k1 >|= get in
     Alcotest.(check string) "x1.1" x1 y1;
     Context.close i1 w1 >>= fun () ->
     (* reopen in rw *)
     let* i2, w2 = t.clone_index_pack ~readonly:false in
-    let* y1 = Pack.find w2 h1 >|= get in
+    let* y1 = Pack.find w2 k1 >|= get in
     Alcotest.(check string) "x1.2" x1 y1;
 
     (*reopen in ro *)
     let* i3, w3 = t.clone_index_pack ~readonly:true in
-    let* y1 = Pack.find w3 h1 >|= get in
+    let* y1 = Pack.find w3 k1 >|= get in
     Alcotest.(check string) "x1.3" x1 y1;
     Context.close i2 w2 >>= fun () -> Context.close i3 w3
 
@@ -344,37 +353,38 @@ module Pack = struct
     let x2 = "bar" in
     let h1 = sha1 x1 in
     let h2 = sha1 x2 in
-    let* () =
+    let* ks =
       Pack.batch w (fun w ->
-          Lwt_list.iter_s
+          Lwt_list.map_s
             (fun (k, v) -> Pack.unsafe_add w k v)
             [ (h1, x1); (h2, x2) ])
     in
+    let k1, k2 = match ks with [ k1; k2 ] -> (k1, k2) | _ -> assert false in
     Context.close t.index w >>= fun () ->
     (*reopen pack and index *)
     let* i, w = t.clone_index_pack ~readonly:false in
-    let* y2 = Pack.find w h2 >|= get in
+    let* y2 = Pack.find w k2 >|= get in
     Alcotest.(check string) "x2.1" x2 y2;
-    let* y1 = Pack.find w h1 >|= get in
+    let* y1 = Pack.find w k1 >|= get in
     Alcotest.(check string) "x1.1" x1 y1;
     (*open and close two packs *)
     let x3 = "toto" in
     let h3 = sha1 x3 in
-    Pack.unsafe_append ~ensure_unique:true ~overcommit:false w h3 x3;
+    let k3 = Pack.unsafe_append ~ensure_unique:true ~overcommit:false w h3 x3 in
     let* w2 = t.clone_pack ~readonly:false in
     Pack.close w >>= fun () ->
-    let* y2 = Pack.find w2 h2 >|= get in
+    let* y2 = Pack.find w2 k2 >|= get in
     Alcotest.(check string) "x2.2" x2 y2;
-    let* y3 = Pack.find w2 h3 >|= get in
+    let* y3 = Pack.find w2 k3 >|= get in
     Alcotest.(check string) "x3.2" x3 y3;
-    let* y1 = Pack.find w2 h1 >|= get in
+    let* y1 = Pack.find w2 k1 >|= get in
     Alcotest.(check string) "x1.2" x1 y1;
     Context.close i w2 >>= fun () ->
     (*reopen pack and index in readonly *)
     let* i, r = t.clone_index_pack ~readonly:true in
-    let* y1 = Pack.find r h1 >|= get in
+    let* y1 = Pack.find r k1 >|= get in
     Alcotest.(check string) "x1.3" x1 y1;
-    let* y2 = Pack.find r h2 >|= get in
+    let* y2 = Pack.find r k2 >|= get in
     Alcotest.(check string) "x2.3" x2 y2;
     Context.close i r >>= fun () ->
     (*close index while in use*)
@@ -382,7 +392,7 @@ module Pack = struct
     Index.close i;
     Lwt.catch
       (fun () ->
-        let* _ = Pack.find r h1 in
+        let* _ = Pack.find r k1 in
         Alcotest.fail "Add after closing the index should not be allowed")
       (function I.Closed -> Lwt.return_unit | exn -> Lwt.fail exn)
 
@@ -395,19 +405,23 @@ module Pack = struct
     let test w =
       let x1 = "foo" in
       let h1 = sha1 x1 in
-      Pack.unsafe_append ~ensure_unique:true ~overcommit:false w h1 x1;
+      let k1 =
+        Pack.unsafe_append ~ensure_unique:true ~overcommit:false w h1 x1
+      in
       Pack.sync r;
-      let* y1 = Pack.find r h1 in
+      let* y1 = Pack.find r k1 in
       Alcotest.(check (option string)) "sync before filter" None y1;
       Index.filter t.index (fun _ -> true);
       Pack.sync r;
-      let* y1 = Pack.find r h1 in
+      let* y1 = Pack.find r k1 in
       Alcotest.(check (option string)) "sync after filter" (Some x1) y1;
       let x2 = "foo" in
       let h2 = sha1 x2 in
-      Pack.unsafe_append ~ensure_unique:true ~overcommit:false w h2 x2;
+      let k2 =
+        Pack.unsafe_append ~ensure_unique:true ~overcommit:false w h2 x2
+      in
       Index.flush t.index;
-      let+ y2 = Pack.find r h2 in
+      let+ y2 = Pack.find r k2 in
       Alcotest.(check (option string)) "sync after flush" (Some x2) y2
     in
     test t.pack >>= fun () ->
@@ -423,26 +437,32 @@ module Pack = struct
     let test w =
       let x1 = "foo" in
       let h1 = sha1 x1 in
-      Pack.unsafe_append ~ensure_unique:true ~overcommit:false w h1 x1;
+      let k1 =
+        Pack.unsafe_append ~ensure_unique:true ~overcommit:false w h1 x1
+      in
       Pack.flush t.pack;
       Pack.sync r;
-      check h1 x1 "find before filter" >>= fun () ->
+      check k1 x1 "find before filter" >>= fun () ->
       Index.filter t.index (fun _ -> true);
-      check h1 x1 "find after filter" >>= fun () ->
+      check k1 x1 "find after filter" >>= fun () ->
       let x2 = "bar" in
       let h2 = sha1 x2 in
-      Pack.unsafe_append ~ensure_unique:true ~overcommit:false w h2 x2;
+      let k2 =
+        Pack.unsafe_append ~ensure_unique:true ~overcommit:false w h2 x2
+      in
       Pack.flush t.pack;
       Pack.sync r;
-      check h2 x2 "find before flush" >>= fun () ->
+      check k2 x2 "find before flush" >>= fun () ->
       let x3 = "toto" in
       let h3 = sha1 x3 in
-      Pack.unsafe_append ~ensure_unique:true ~overcommit:false w h3 x3;
+      let k3 =
+        Pack.unsafe_append ~ensure_unique:true ~overcommit:false w h3 x3
+      in
       Index.flush t.index;
-      check h2 x2 "find after flush" >>= fun () ->
+      check k2 x2 "find after flush" >>= fun () ->
       Pack.flush t.pack;
       Pack.sync r;
-      check h3 x3 "find after flush new values"
+      check k3 x3 "find after flush new values"
     in
     test t.pack >>= fun () ->
     Context.close t.index t.pack >>= fun () -> Context.close i r
@@ -450,8 +470,10 @@ module Pack = struct
   let test_clear () =
     let* t = Context.get_pack ~lru_size:10 () in
     let v = "foo" in
-    let k = sha1 v in
-    Pack.unsafe_append ~ensure_unique:true ~overcommit:false t.pack k v;
+    let h = sha1 v in
+    let k =
+      Pack.unsafe_append ~ensure_unique:true ~overcommit:false t.pack h v
+    in
     Pack.flush t.pack;
     let* v1 = Pack.find t.pack k in
     Alcotest.(check (option string)) "before clear" (Some v) v1;
@@ -474,16 +496,18 @@ module Pack = struct
     let x1 = "foo" in
     let h1 = sha1 x1 in
     let find_before_and_after_sync persist file =
-      Pack.unsafe_append ~ensure_unique:true ~overcommit:false t.pack h1 x1;
+      let k1 =
+        Pack.unsafe_append ~ensure_unique:true ~overcommit:false t.pack h1 x1
+      in
       persist ();
       Pack.sync r;
       Pack.clear t.pack >>= fun () ->
       Pack.flush t.pack;
       let* () =
-        check h1 (Some x1) ("find in " ^ file ^ " after clear but before sync")
+        check k1 (Some x1) ("find in " ^ file ^ " after clear but before sync")
       in
       Pack.sync r;
-      check h1 None ("find in " ^ file ^ " after clear and sync")
+      check k1 None ("find in " ^ file ^ " after clear and sync")
     in
     let* () =
       find_before_and_after_sync (fun () -> Index.flush t.index) "log"
@@ -509,21 +533,25 @@ module Pack = struct
     let x2 = "bar" in
     let h2 = sha1 x2 in
     let find_before_and_after_sync persist file =
-      Pack.unsafe_append ~ensure_unique:true ~overcommit:false t.pack h1 x1;
+      let k1 =
+        Pack.unsafe_append ~ensure_unique:true ~overcommit:false t.pack h1 x1
+      in
       persist ();
       Pack.sync r;
       Pack.clear t.pack >>= fun () ->
-      Pack.unsafe_append ~ensure_unique:true ~overcommit:false t.pack h2 x2;
+      let k2 =
+        Pack.unsafe_append ~ensure_unique:true ~overcommit:false t.pack h2 x2
+      in
       persist ();
       let* () =
-        check h1 (Some x1)
+        check k1 (Some x1)
           ("find old values in " ^ file ^ " after clear but before sync")
       in
       Pack.sync r;
       let* () =
-        check h1 None ("do not find old values in " ^ file ^ " after sync")
+        check k1 None ("do not find old values in " ^ file ^ " after sync")
       in
-      check h2 (Some x2) ("find new values in " ^ file ^ " after sync")
+      check k2 (Some x2) ("find new values in " ^ file ^ " after sync")
     in
     let* () =
       find_before_and_after_sync (fun () -> Index.flush t.index) "log"
@@ -563,8 +591,7 @@ module Branch = struct
     let version = `V2
   end
 
-  module Branch =
-    Irmin_pack.Atomic_write.Make (V2) (Irmin.Branch.String) (Irmin.Hash.SHA1)
+  module Branch = Irmin_pack.Atomic_write.Make (V2) (Irmin.Branch.String) (K)
 
   let pp_hash = Irmin.Type.pp Irmin.Hash.SHA1.t
 
@@ -574,10 +601,11 @@ module Branch = struct
   let test_branch () =
     let branches = [ "foo"; "bar/toto"; "titi" ] in
     let test t =
-      Lwt_list.iter_s (fun k -> Branch.set t k (sha1 k)) branches >>= fun () ->
+      Lwt_list.iter_s (fun k -> Branch.set t k (K.v (sha1 k))) branches
+      >>= fun () ->
       let check h =
         let+ v = Branch.find t h in
-        Alcotest.(check (option hash)) h (Some (sha1 h)) v
+        Alcotest.(check (option hash)) h (Some (sha1 h)) (Option.map K.hash v)
       in
       Lwt_list.iter_p check branches
     in
@@ -588,16 +616,16 @@ module Branch = struct
     let* t = Branch.v ~fresh:false name in
     test t >>= fun () ->
     let x = sha1 "XXX" in
-    Branch.set t "foo" x >>= fun () ->
+    Branch.set t "foo" (K.v x) >>= fun () ->
     let* t = Branch.v ~fresh:false name in
     let* v = Branch.find t "foo" in
-    Alcotest.(check (option hash)) "foo" (Some x) v;
+    Alcotest.(check (option hash)) "foo" (Some x) (Option.map K.hash v);
     let* br = Branch.list t in
     Alcotest.(check (slist string compare)) "branches" branches br;
     Branch.remove t "foo" >>= fun () ->
     let* t = Branch.v ~fresh:false name in
     let* v = Branch.find t "foo" in
-    Alcotest.(check (option hash)) "foo none" None v;
+    Alcotest.(check (option hash)) "foo none" None (Option.map K.hash v);
     let* br = Branch.list t in
     Alcotest.(check (slist string compare))
       "branches"
@@ -611,13 +639,13 @@ module Branch = struct
       Lwt_list.iter_s
         (fun k ->
           Logs.debug (fun l -> l "k = %s, v= %a" k pp_hash (sha1 k));
-          Branch.set t k (sha1 k))
+          Branch.set t k (K.v (sha1 k)))
         branches
     in
     let test t =
       let check h =
         let+ v = Branch.find t h in
-        Alcotest.(check (option hash)) h (Some (sha1 h)) v
+        Alcotest.(check (option hash)) h (Some (sha1 h)) (Option.map K.hash v)
       in
       Lwt_list.iter_p check branches
     in
@@ -650,7 +678,9 @@ let misc =
     ("pack-files", Pack.tests);
     ("branch-files", Branch.tests);
     ("instances", Multiple_instances.tests);
+    (*
     ("existing stores", Test_existing_stores.tests);
     ("layers", Layered.tests);
+ *)
     ("inodes", Test_inode.tests);
   ]

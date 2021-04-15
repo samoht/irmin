@@ -36,7 +36,7 @@ type config = {
 module type Store = sig
   include Irmin.S with type key = string list and type contents = bytes
 
-  type on_commit := int -> Hash.t -> unit Lwt.t
+  type on_commit := int -> commit_id -> unit Lwt.t
   type on_end := unit -> unit Lwt.t
   type pp := Format.formatter -> unit
 
@@ -536,12 +536,14 @@ module Bootstrap_trace = struct
 end
 
 module Generate_trees_from_trace (Store : Store) = struct
+  module Key = Store.Private.Commit.Key
+
   type context = { tree : Store.tree }
 
   type t = {
     contexts : (int64, context) Hashtbl.t;
     hash_corresps : (Bootstrap_trace.hash, Store.Hash.t) Hashtbl.t;
-    mutable latest_commit : Store.Hash.t option;
+    mutable latest_commit : Store.commit_id option;
   }
 
   let pp_stats ppf
@@ -659,7 +661,7 @@ module Generate_trees_from_trace (Store : Store) = struct
   let exec_checkout t repo h_trace out_ctx_id () =
     let h_store = Hashtbl.find t.hash_corresps (unscope h_trace) in
     maybe_forget_hash t h_trace;
-    Store.Commit.of_hash repo h_store >|= function
+    Store.Commit.of_id repo (Key.v h_store) >|= function
     | None -> failwith "prev commit not found"
     | Some commit ->
         let tree = Store.Commit.tree commit in
@@ -723,6 +725,7 @@ module Generate_trees_from_trace (Store : Store) = struct
       parents_trace
       |> List.map unscope
       |> List.map (Hashtbl.find t.hash_corresps)
+      |> List.map Key.v
     in
     List.iter (maybe_forget_hash t) parents_trace;
     let { tree } = Hashtbl.find t.contexts (unscope in_ctx_id) in
@@ -734,11 +737,11 @@ module Generate_trees_from_trace (Store : Store) = struct
     let info = Irmin.Info.v ~date ~author:"Tezos" message in
     let+ commit = Store.Commit.v repo ~info ~parents:parents_store tree in
     Store.Tree.clear tree;
-    let h_store = Store.Commit.hash commit in
-    if check_hash then check_hash_trace (unscope h_trace) h_store;
+    let h_store = Store.Commit.id commit in
+    if check_hash then check_hash_trace (unscope h_trace) (Key.hash h_store);
     (* It's okey to have [h_trace] already in history. It corresponds to
      * re-commiting the same thing, hence the [.replace] below. *)
-    Hashtbl.replace t.hash_corresps (unscope h_trace) h_store;
+    Hashtbl.replace t.hash_corresps (unscope h_trace) (Key.hash h_store);
     maybe_forget_hash t h_trace;
     t.latest_commit <- Some h_store
 
@@ -838,7 +841,7 @@ module Bench_suite (Store : Store) = struct
   module Trees_trace = Generate_trees_from_trace (Store)
 
   let checkout_and_commit repo prev_commit f =
-    Store.Commit.of_hash repo prev_commit >>= function
+    Store.Commit.of_id repo prev_commit >>= function
     | None -> Lwt.fail_with "commit not found"
     | Some commit ->
         let tree = Store.Commit.tree commit in
@@ -851,8 +854,8 @@ module Bench_suite (Store : Store) = struct
     let rec aux c i =
       if i >= ncommits then on_end ()
       else
-        let* c' = checkout_and_commit repo (Store.Commit.hash c) f in
-        let* () = on_commit i (Store.Commit.hash c') in
+        let* c' = checkout_and_commit repo (Store.Commit.id c) f in
+        let* () = on_commit i (Store.Commit.id c') in
         prog Int64.one;
         aux c' (i + 1)
     in
@@ -972,13 +975,15 @@ module Bench_suite (Store : Store) = struct
       raise e
 end
 
+(*
 module Make_store_layered (Conf : sig
   val entries : int
   val stable_hash : int
 end) =
 struct
   open Tezos_context_hash.Encoding
-  module Maker = Irmin_pack_layered.Maker_ext (Conf) (Node) (Commit)
+
+module Maker = Irmin_pack_layered.Maker_ext (Conf) (Node) (Commit)
   module Store = Maker.Make (Metadata) (Contents) (Path) (Branch) (Hash)
 
   let create_repo config =
@@ -1007,6 +1012,7 @@ struct
   include Store
 end
 
+*)
 module Make_store_pack (Conf : sig
   val entries : int
   val stable_hash : int
@@ -1046,7 +1052,8 @@ let store_of_config config =
   end in
   match config.store_type with
   | `Pack -> (module Bench_suite (Make_store_pack (Conf)) : B)
-  | `Pack_layered -> (module Bench_suite (Make_store_layered (Conf)) : B)
+  | `Pack_layered -> assert false
+(* (module Bench_suite (Make_store_layered (Conf)) : B) *)
 
 type suite_elt = {
   mode : [ `Read_trace | `Chains | `Large ];

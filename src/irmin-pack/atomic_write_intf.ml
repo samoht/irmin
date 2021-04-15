@@ -25,7 +25,7 @@ end
 module type Sigs = sig
   module type S = S
 
-  module Make (_ : Version.S) (K : Irmin.Type.S) (V : Irmin.Hash.S) :
+  module Make (_ : Version.S) (K : Irmin.Type.S) (V : Irmin.Key.S) :
     S with type key = K.t and type value = V.t
 
   module Closeable (AW : S) :
