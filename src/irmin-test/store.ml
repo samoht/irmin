@@ -49,16 +49,16 @@ module Make (S : S) = struct
     | None -> Lwt.return_unit
     | Some f -> f repo commits
 
-  let may_get_hashes repo hashes = function
+  let may_get_ids repo ids = function
     | None -> Lwt.return_unit
     | Some f ->
         let* commits =
           Lwt_list.map_p
-            (fun hash ->
-              S.Commit.of_hash repo hash >|= function
+            (fun id ->
+              S.Commit.of_id repo id >|= function
               | None -> Alcotest.fail "Cannot read commit hash"
               | Some c -> c)
-            hashes
+            ids
         in
         f repo commits
 
@@ -108,19 +108,18 @@ module Make (S : S) = struct
 
   let get = function None -> Alcotest.fail "get" | Some v -> v
 
-  module H_node = Irmin.Hash.Typed (P.Hash) (P.Node.Val)
-
   let test_nodes x () =
     let test repo =
       let g = g repo and n = n repo in
-      let k = normal (P.Contents.Key.hash "foo") in
+      let k = normal (P.Contents.Key.v (H_contents.hash "foo")) in
+      let check_hash = check P.Hash.t in
       let check_key = check P.Node.Key.t in
       let check_val = check [%typ: Graph.value option] in
       let check_list = checks [%typ: S.step * P.Node.Val.value] in
       let check_node msg v =
         let h' = H_node.hash v in
-        let+ h = with_node repo (fun n -> P.Node.add n v) in
-        check_key (msg ^ ": hash(v) = add(v)") h h'
+        let+ id = with_node repo (fun n -> P.Node.add n v) in
+        check_hash (msg ^ ": hash(v) = add(v)") (P.Node.Key.hash id) h'
       in
       let v = P.Node.Val.empty in
       check_node "empty node" v >>= fun () ->
@@ -160,7 +159,7 @@ module Make (S : S) = struct
       check_node "node: x+y+z+a+b" u >>= fun () ->
       let h = H_node.hash u in
       let* k = with_node repo (fun n -> P.Node.add n u) in
-      check_key "hash(v) = add(v)" h k;
+      check_hash "hash(v) = add(v)" h (P.Node.Key.hash k);
       let* w = P.Node.find n k in
       check_values (get w);
       let* kv1 = kv1 ~repo in
@@ -286,7 +285,7 @@ module Make (S : S) = struct
       let* kr2s = History.closure h ~min:[] ~max:[ kr2 ] in
       check_keys "g2" [ kr1; kr2 ] kr2s;
       let* () =
-        S.Commit.of_hash repo kr1 >|= function
+        S.Commit.of_id repo kr1 >|= function
         | None -> Alcotest.fail "Cannot read commit hash"
         | Some c ->
             Alcotest.(check string)
@@ -473,7 +472,7 @@ module Make (S : S) = struct
       let check_hash msg bindings =
         let* node = node bindings in
         let+ tree = tree bindings in
-        check S.Hash.t msg node (S.Tree.hash tree)
+        check P.Node.Key.t msg node (get_node_id (S.Tree.id tree))
       in
       check_hash "empty" [] >>= fun () ->
       let bindings1 = [ ([ "a" ], "x"); ([ "b" ], "y") ] in
@@ -564,7 +563,7 @@ module Make (S : S) = struct
       let* kr0, _ = with_info 0 (History.v ~node:k0 ~parents:[]) in
       let* kr1, _ = with_info 1 (History.v ~node:k2 ~parents:[ kr0 ]) in
       let* kr2, _ = with_info 2 (History.v ~node:k3 ~parents:[ kr0 ]) in
-      may_get_hashes repo [ kr1; kr2 ] hook >>= fun () ->
+      may_get_ids repo [ kr1; kr2 ] hook >>= fun () ->
       let* kr3 =
         with_info 3 (fun h ~info ->
             Irmin.Merge.f
@@ -572,7 +571,7 @@ module Make (S : S) = struct
               ~old:(old kr0) kr1 kr2)
       in
       let* kr3 = merge_exn "kr3" kr3 in
-      may_get_hashes repo [ kr3 ] hook >>= fun () ->
+      may_get_ids repo [ kr3 ] hook >>= fun () ->
       let* kr3_id' =
         with_info 4 (fun h ~info ->
             Irmin.Merge.f
@@ -580,7 +579,8 @@ module Make (S : S) = struct
               ~old:(old kr2) kr2 kr3)
       in
       let* kr3_id' = merge_exn "kr3_id'" kr3_id' in
-      check S.Hash.t "kr3 id with immediate parent'" kr3 kr3_id';
+      let check_key = check P.Commit.Key.t in
+      check_key "kr3 id with immediate parent'" kr3 kr3_id';
       let* kr3_id =
         with_info 5 (fun h ~info ->
             Irmin.Merge.f
@@ -588,12 +588,12 @@ module Make (S : S) = struct
               ~old:(old kr0) kr0 kr3)
       in
       let* kr3_id = merge_exn "kr3_id" kr3_id in
-      check S.Hash.t "kr3 id with old parent" kr3 kr3_id;
+      check_key "kr3 id with old parent" kr3 kr3_id;
       let* kr3', _ = with_info 3 @@ History.v ~node:k4 ~parents:[ kr1; kr2 ] in
       let* r3 = P.Commit.find c kr3 in
       let* r3' = P.Commit.find c kr3' in
       check T.(option P.Commit.Val.t) "r3" r3 r3';
-      check S.Hash.t "kr3" kr3 kr3';
+      check_key "kr3" kr3 kr3';
       P.Repo.close repo
     in
     run x test
@@ -665,22 +665,22 @@ module Make (S : S) = struct
       assert_history_empty "nonempty 1 commit" c0 false >>= fun () ->
       let* tree = S.Tree.add tree k1 (random_value 1024) in
       let* c1 =
-        S.Commit.v repo ~info:(info 1) ~parents:[ S.Commit.hash c0 ] tree
+        S.Commit.v repo ~info:(info 1) ~parents:[ S.Commit.id c0 ] tree
       in
       assert_history_empty "nonempty 2 commits" c0 false >>= fun () ->
       let* tree = S.Tree.add tree k0 (random_value 1024) in
       let* c2 =
-        S.Commit.v repo ~info:(info 2) ~parents:[ S.Commit.hash c1 ] tree
+        S.Commit.v repo ~info:(info 2) ~parents:[ S.Commit.id c1 ] tree
       in
       let* tree = S.Tree.add tree k0 (random_value 1024) in
       let* tree = S.Tree.add tree k1 (random_value 1024) in
       let* c3 =
-        S.Commit.v repo ~info:(info 3) ~parents:[ S.Commit.hash c2 ] tree
+        S.Commit.v repo ~info:(info 3) ~parents:[ S.Commit.id c2 ] tree
       in
       may repo [ c3 ] hook >>= fun () ->
       let* tree = S.Tree.add tree k1 (random_value 1024) in
       let* c4 =
-        S.Commit.v repo ~info:(info 4) ~parents:[ S.Commit.hash c3 ] tree
+        S.Commit.v repo ~info:(info 4) ~parents:[ S.Commit.id c3 ] tree
       in
       assert_lcas "line lcas 1" ~max_depth:0 3 c3 c4 [ c3 ] >>= fun () ->
       assert_lcas "line lcas 2" ~max_depth:1 3 c2 c4 [ c2 ] >>= fun () ->
@@ -713,41 +713,41 @@ module Make (S : S) = struct
       *)
       let* tree = S.Tree.add tree k2 (random_value 1024) in
       let* c10 =
-        S.Commit.v repo ~info:(info 10) ~parents:[ S.Commit.hash c4 ] tree
+        S.Commit.v repo ~info:(info 10) ~parents:[ S.Commit.id c4 ] tree
       in
       let* tree_up = S.Tree.add tree k0 (random_value 1024) in
       let* tree_up = S.Tree.add tree_up k2 (random_value 1024) in
       let* c11 =
-        S.Commit.v repo ~info:(info 11) ~parents:[ S.Commit.hash c10 ] tree_up
+        S.Commit.v repo ~info:(info 11) ~parents:[ S.Commit.id c10 ] tree_up
       in
       let* tree_down = S.Tree.add tree k0 (random_value 1024) in
       let* tree_12 = S.Tree.add tree_down k1 (random_value 1024) in
       let* c12 =
-        S.Commit.v repo ~info:(info 12) ~parents:[ S.Commit.hash c10 ] tree_12
+        S.Commit.v repo ~info:(info 12) ~parents:[ S.Commit.id c10 ] tree_12
       in
       let* tree_up = S.Tree.add tree_up k1 (random_value 1024) in
       let* c13 =
-        S.Commit.v repo ~info:(info 13) ~parents:[ S.Commit.hash c11 ] tree_up
+        S.Commit.v repo ~info:(info 13) ~parents:[ S.Commit.id c11 ] tree_up
       in
       let* tree_down = S.Tree.add tree_12 k2 (random_value 1024) in
       let* c14 =
-        S.Commit.v repo ~info:(info 14) ~parents:[ S.Commit.hash c12 ] tree_down
+        S.Commit.v repo ~info:(info 14) ~parents:[ S.Commit.id c12 ] tree_down
       in
       let* tree_up = S.Tree.add tree_12 k1 (random_value 1024) in
       let* tree_up = S.Tree.add tree_up k2 (random_value 1024) in
       let* c15 =
         S.Commit.v repo ~info:(info 15)
-          ~parents:[ S.Commit.hash c12; S.Commit.hash c13 ]
+          ~parents:[ S.Commit.id c12; S.Commit.id c13 ]
           tree_up
       in
       let* tree_down = S.Tree.add tree_down k2 (random_value 1024) in
       let* c16 =
-        S.Commit.v repo ~info:(info 16) ~parents:[ S.Commit.hash c14 ] tree_down
+        S.Commit.v repo ~info:(info 16) ~parents:[ S.Commit.id c14 ] tree_down
       in
       let* tree_down = S.Tree.add tree_down k0 (random_value 1024) in
       let* c17 =
         S.Commit.v repo ~info:(info 17)
-          ~parents:[ S.Commit.hash c11; S.Commit.hash c16 ]
+          ~parents:[ S.Commit.id c11; S.Commit.id c16 ]
           tree_down
       in
       assert_lcas "x lcas 0" ~max_depth:0 5 c10 c10 [ c10 ] >>= fun () ->
@@ -785,29 +785,29 @@ module Make (S : S) = struct
                  \-----------/
       *)
       let* c10 =
-        S.Commit.v repo ~info:(info 10) ~parents:[ S.Commit.hash c4 ] tree
+        S.Commit.v repo ~info:(info 10) ~parents:[ S.Commit.id c4 ] tree
       in
       let* c11 =
-        S.Commit.v repo ~info:(info 11) ~parents:[ S.Commit.hash c10 ] tree
+        S.Commit.v repo ~info:(info 11) ~parents:[ S.Commit.id c10 ] tree
       in
       let* c12 =
-        S.Commit.v repo ~info:(info 12) ~parents:[ S.Commit.hash c11 ] tree
+        S.Commit.v repo ~info:(info 12) ~parents:[ S.Commit.id c11 ] tree
       in
       let* c13 =
-        S.Commit.v repo ~info:(info 13) ~parents:[ S.Commit.hash c12 ] tree
+        S.Commit.v repo ~info:(info 13) ~parents:[ S.Commit.id c12 ] tree
       in
       let* c14 =
         S.Commit.v repo ~info:(info 14)
-          ~parents:[ S.Commit.hash c11; S.Commit.hash c13 ]
+          ~parents:[ S.Commit.id c11; S.Commit.id c13 ]
           tree
       in
       let* c15 =
         S.Commit.v repo ~info:(info 15)
-          ~parents:[ S.Commit.hash c13; S.Commit.hash c14 ]
+          ~parents:[ S.Commit.id c13; S.Commit.id c14 ]
           tree
       in
       let* c16 =
-        S.Commit.v repo ~info:(info 16) ~parents:[ S.Commit.hash c11 ] tree
+        S.Commit.v repo ~info:(info 16) ~parents:[ S.Commit.id c11 ] tree
       in
       assert_lcas "weird lcas 1" ~max_depth:0 3 c14 c15 [ c14 ] >>= fun () ->
       assert_lcas "weird lcas 2" ~max_depth:0 3 c13 c15 [ c13 ] >>= fun () ->
@@ -1000,7 +1000,7 @@ module Make (S : S) = struct
     Alcotest.testable
       (fun ppf -> function
         | `Contents -> Fmt.string ppf "contents"
-        | `Node `Hash -> Fmt.string ppf "hash"
+        | `Node `Id -> Fmt.string ppf "id"
         | `Node `Map -> Fmt.string ppf "map"
         | `Node `Value -> Fmt.string ppf "value")
       ( = )
@@ -1013,7 +1013,7 @@ module Make (S : S) = struct
       (* Testing cache *)
       S.Tree.reset_counters ();
       let* v = S.get_tree t1 [] in
-      Alcotest.(check inspect) "inspect" (`Node `Hash) (S.Tree.inspect v);
+      Alcotest.(check inspect) "inspect" (`Node `Id) (S.Tree.inspect v);
       let* v = S.Tree.add v [ "foo" ] "foo" in
       Alcotest.(check inspect) "inspect:0" (`Node `Value) (S.Tree.inspect v);
       Alcotest.(check int) "val-v:0" 0 (S.Tree.counters ()).node_val_v;
@@ -1021,17 +1021,20 @@ module Make (S : S) = struct
       Alcotest.(check inspect) "inspect:1" (`Node `Value) (S.Tree.inspect v);
       Alcotest.(check int) "val-v:1" 0 (S.Tree.counters ()).node_val_v;
       Alcotest.(check int) "val-list:1" 0 (S.Tree.counters ()).node_val_list;
-      let _ = S.Tree.hash v in
+      let _ = S.Tree.id v in
       Alcotest.(check inspect) "inspect:2" (`Node `Value) (S.Tree.inspect v);
       Alcotest.(check int) "val-v:2" 0 (S.Tree.counters ()).node_val_v;
       Alcotest.(check int) "val-list:2" 0 (S.Tree.counters ()).node_val_list;
       S.set_tree_exn t1 ~info [] v >>= fun () ->
-      Alcotest.(check inspect) "inspect:3" (`Node `Hash) (S.Tree.inspect v);
+      Alcotest.(check inspect) "inspect:3" (`Node `Id) (S.Tree.inspect v);
       Alcotest.(check int) "val-v:3" 0 (S.Tree.counters ()).node_val_v;
       Alcotest.(check int) "val-list:3" 0 (S.Tree.counters ()).node_val_list;
 
+      let shallow s =
+        S.Tree.shallow repo (`Node (P.Node.Key.v (H_contents.hash s)))
+      in
       (* Test caching (makesure that no tree is lying in scope) *)
-      let v0 = S.Tree.shallow repo (`Node (P.Contents.Key.hash "foo-x")) in
+      let v0 = shallow "foo-x" in
       S.Tree.reset_counters ();
       let foo = "foo-x" in
       let* v0 = S.Tree.add v0 [ "foo" ] foo in
@@ -1039,10 +1042,10 @@ module Make (S : S) = struct
       Alcotest.(check int) "1 Node.find" 2 (S.Tree.counters ()).node_find;
 
       (* cache is filled whenever we hash something *)
-      let _ = S.Tree.hash v0 in
+      let _ = S.Tree.id v0 in
       let* _v0 = S.Tree.add v0 [ "foo" ] foo in
-      let _k = S.Tree.hash v0 in
-      let v0 = S.Tree.shallow repo (`Node (P.Contents.Key.hash "bar-x")) in
+      let _k = S.Tree.id v0 in
+      let v0 = shallow "bar-x" in
       let xxx = "xxx" in
       let yyy = "yyy" in
       let zzz = "zzz" in
@@ -1138,7 +1141,7 @@ module Make (S : S) = struct
       Alcotest.(check stats_t) "empty stats" empty_stats s;
       S.set_tree_exn t ~info:(infof "empty tree") [] v1 >>= fun () ->
       let* head = S.Head.get t in
-      S.Commit.hash head |> fun head ->
+      S.Commit.id head |> fun head ->
       let* commit = P.Commit.find (ct repo) head in
       let node = P.Commit.Val.node (get commit) in
       let* node = P.Node.find (n repo) node in
@@ -1362,7 +1365,7 @@ module Make (S : S) = struct
       let i0 = Irmin.Info.empty in
       let* c =
         S.Commit.v repo ~info:Irmin.Info.empty
-          ~parents:[ S.Commit.hash r1; S.Commit.hash r2 ]
+          ~parents:[ S.Commit.id r1; S.Commit.id r2 ]
           v3
       in
       S.Head.set t c >>= fun () ->
@@ -1432,9 +1435,9 @@ module Make (S : S) = struct
       S.Tree.remove c [ "foo"; "499999" ] >>= fun c1 ->
       S.Tree.add c0 [] "499999" >>= fun c2 ->
       S.Tree.add_tree c1 [ "foo"; "499999" ] c2 >>= fun c' ->
-      let h' = S.Tree.hash c' in
-      let h = S.Tree.hash c in
-      check S.Hash.t "same tree" h h';
+      let h' = S.Tree.id c' in
+      let h = S.Tree.id c in
+      check S.Tree.kinded_id_t "same tree" h h';
       S.Tree.get_tree c [ "foo" ] >>= fun c1 ->
       (match S.Tree.destruct c1 with
       | `Contents _ -> Alcotest.fail "got `Contents, expected `Node"
@@ -1443,11 +1446,12 @@ module Make (S : S) = struct
           | Ok v -> (
               let ls = P.Node.Val.list v in
               Alcotest.(check int) "list wide node" size (List.length ls);
-              let k = normal (P.Contents.Key.hash "bar") in
+              let k = normal (P.Contents.Key.v (H_contents.hash "bar")) in
               let v1 = P.Node.Val.add v "x" k in
               let h' = H_node.hash v1 in
               with_node repo (fun n -> P.Node.add n v1) >>= fun h ->
-              check H_node.t "wide node + x: hash(v) = add(v)" h h';
+              check H_node.t "wide node + x: hash(v) = add(v)"
+                (P.Node.Key.hash h) h';
               let v2 = P.Node.Val.add v "x" k in
               check P.Node.Val.t "add x" v1 v2;
               let v0 = P.Node.Val.remove v1 "x" in
@@ -1455,11 +1459,14 @@ module Make (S : S) = struct
               let v3 = P.Node.Val.remove v "1" in
               let h' = H_node.hash v3 in
               with_node repo (fun n -> P.Node.add n v3) >|= fun h ->
-              check H_node.t "wide node - 1 : hash(v) = add(v)" h h';
+              check H_node.t "wide node - 1 : hash(v) = add(v)"
+                (P.Node.Key.hash h) h';
               (match P.Node.Val.find v "499999" with
               | None -> Alcotest.fail "value 499999 not found"
               | Some x ->
-                  let x' = normal (P.Contents.Key.hash "499999") in
+                  let x' =
+                    normal (P.Contents.Key.v (H_contents.hash "499999"))
+                  in
                   check P.Node.Val.value_t "find 499999" x x');
               match P.Node.Val.find v "500000" with
               | None -> ()
@@ -1605,13 +1612,13 @@ module Make (S : S) = struct
           Irmin.Merge.f
             (P.Commit.merge commit_t ~info)
             ~old
-            (Some (S.Commit.hash c3))
-            (Some (S.Commit.hash c2)))
+            (Some (S.Commit.id c3))
+            (Some (S.Commit.id c2)))
       >>= merge_exn "commit"
       >>= function
       | None -> Lwt.return_unit
       | Some c4 ->
-          let* k = none_fail (S.Commit.of_hash repo c4) "of hash" in
+          let* k = none_fail (S.Commit.of_id repo c4) "of hash" in
           S.Branch.set repo "foo" k >>= fun () ->
           let* t = S.of_branch repo "foo" in
           let* vy' = S.find t [ "u"; "x"; "y" ] in
@@ -1895,17 +1902,22 @@ module Make (S : S) = struct
 
   let test_shallow_objects x () =
     let test repo =
-      let foo_k = S.Private.Contents.Key.hash "foo" in
-      let bar_k = S.Private.Contents.Key.hash "bar" in
+      let contents s = P.Contents.Key.v (H_contents.hash s) in
+      let node s = P.Node.Key.v (H_contents.hash s) in
+      let commit s = P.Commit.Key.v (H_contents.hash s) in
+      let foo_k = node "foo" in
+      let bar_k = node "bar" in
       let tree_1 = S.Tree.shallow repo (`Node foo_k) in
       let tree_2 = S.Tree.shallow repo (`Node bar_k) in
       let node_3 =
         S.Private.Node.Val.v
           [
-            ("foo", `Contents (foo_k, S.Metadata.default)); ("bar", `Node bar_k);
+            ("foo", `Contents (contents "foo", S.Metadata.default));
+            ("bar", `Node bar_k);
           ]
       in
       let tree_3 = S.Tree.of_node (S.of_private_node repo node_3) in
+      let id_3 = get_node_id (S.Tree.id tree_3) in
       let info () = info "shallow" in
       let* t = S.master repo in
       S.set_tree_exn t [ "1" ] tree_1 ~info >>= fun () ->
@@ -1913,8 +1925,8 @@ module Make (S : S) = struct
       let* h = S.Head.get t in
       let commit =
         S.of_private_commit repo
-        @@ S.Private.Commit.Val.v ~info:(info ()) ~node:(S.Tree.hash tree_3)
-             ~parents:[ S.Commit.hash h; foo_k ]
+        @@ S.Private.Commit.Val.v ~info:(info ()) ~node:id_3
+             ~parents:[ S.Commit.id h; commit "foo" ]
       in
       S.set_tree_exn t [ "3" ] ~parents:[ commit ] tree_3 ~info >>= fun () ->
       let* t1 = S.find_tree t [ "1" ] in
@@ -1956,7 +1968,7 @@ module Make (S : S) = struct
         >|= check_commit "r1 after clear is not found" None
       in
       let* () =
-        P.Commit.find ct (S.Commit.hash h1)
+        P.Commit.find ct (S.Commit.id h1)
         >|= check_none "after clear commit is not found"
       in
       let* () =

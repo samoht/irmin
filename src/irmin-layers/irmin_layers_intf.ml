@@ -63,9 +63,9 @@ module type S = sig
         and then a new one is started afterwards. *)
 
   type store_handle =
-    | Commit_t : hash -> store_handle
-    | Node_t : hash -> store_handle
-    | Content_t : hash -> store_handle
+    | Commit_t : commit_id -> store_handle
+    | Node_t : node_id -> store_handle
+    | Content_t : contents_id -> store_handle
 
   val layer_id : repo -> store_handle -> layer_id Lwt.t
   (** [layer_id t store_handle] returns the layer where an object, identified by

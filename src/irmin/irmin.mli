@@ -464,6 +464,9 @@ module Of_private (P : Private.S) :
      and type Key.step = P.Node.Path.step
      and type repo = P.Repo.t
      and type slice = P.Slice.t
+     and type contents_id = P.Contents.key
+     and type node_id = P.Node.key
+     and type commit_id = P.Commit.key
      and module Private = P
 
 module Export_for_backends = Export_for_backends

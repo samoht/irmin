@@ -49,9 +49,9 @@ struct
       Lwt.fail_with "not implemented"
 
     type store_handle =
-      | Commit_t : hash -> store_handle
-      | Node_t : hash -> store_handle
-      | Content_t : hash -> store_handle
+      | Commit_t : commit_id -> store_handle
+      | Node_t : node_id -> store_handle
+      | Content_t : contents_id -> store_handle
 
     let layer_id _repo _store_handle = Lwt.fail_with "not implemented"
     let async_freeze _ = failwith "not implemented"

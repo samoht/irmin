@@ -23,6 +23,7 @@ let src = Logs.Src.create "irmin" ~doc:"Irmin branch-consistent store"
 module Log = (val Logs.src_log src : Logs.LOG)
 
 module Make (P : Private.S) = struct
+  module Typed = Hash.Typed (P.Hash)
   module Branch_store = P.Branch
 
   type branch = Branch_store.key
@@ -39,24 +40,38 @@ module Make (P : Private.S) = struct
 
   module Metadata = P.Node.Metadata
   module H = Commit.History (P.Commit)
+  module T = Tree.Make (P)
 
+  type contents_id = P.Contents.Key.t [@@deriving irmin]
+  type node_id = P.Node.Key.t [@@deriving irmin]
+  type commit_id = P.Commit.Key.t [@@deriving irmin]
+  type node = T.node [@@deriving irmin]
+  type contents = P.Contents.Val.t [@@deriving irmin]
+  type metadata = Metadata.t [@@deriving irmin]
+  type tree = T.t
+  type repo = P.Repo.t
   type Remote.t += E of P.Remote.endpoint
+  type commit = { r : repo; id : commit_id; v : P.Commit.value }
 
   module Contents = struct
     include P.Contents.Val
+    module H = Typed (P.Contents.Val)
 
-    let of_hash r h = P.Contents.find (P.Repo.contents_t r) h
-    let hash c = P.Contents.Key.hash c
+    let of_id r k = P.Contents.find (P.Repo.contents_t r) k
+    let hash c = H.hash c
   end
 
   module Tree = struct
-    include Tree.Make (P)
+    include T
 
-    let of_hash r h = import r h
+    let of_id r k = import r k
     let shallow r h = import_no_check r h
 
     let hash : t -> hash =
-     fun tr -> match hash tr with `Node h -> h | `Contents (h, _) -> h
+     fun tr ->
+      match id tr with
+      | `Node h -> P.Node.Key.hash h
+      | `Contents (h, _) -> P.Contents.Key.hash h
   end
 
   let save_contents b c = P.Contents.add b c
@@ -65,30 +80,32 @@ module Make (P : Private.S) = struct
     match Tree.destruct tr with
     | `Contents (c, _) ->
         let* c = Tree.Contents.force_exn c in
-        save_contents x c
-    | `Node n -> Tree.export ~clear r x y n
+        let+ k = save_contents x c in
+        `Contents k
+    | `Node n ->
+        let+ k = Tree.export ~clear r x y n in
+        `Node k
 
-  type node = Tree.node [@@deriving irmin]
-  type contents = Contents.t [@@deriving irmin]
-  type metadata = Metadata.t [@@deriving irmin]
-  type tree = Tree.t
-  type repo = P.Repo.t
-
-  let equal_hash = Type.(unstage (equal Hash.t))
   let equal_contents = Type.(unstage (equal Contents.t))
   let equal_branch = Type.(unstage (equal Branch_store.Key.t))
+  let pp_contents_id = Type.pp P.Contents.Key.t
+  let pp_node_id = Type.pp P.Node.Key.t
+  let pp_commit_id = Type.pp P.Commit.Key.t
   let pp_key = Type.pp Key.t
   let pp_hash = Type.pp Hash.t
   let pp_branch = Type.pp Branch_store.Key.t
   let pp_option = Type.pp (Type.option Type.int)
+  let equal_contents_id = Type.(unstage (equal P.Contents.Key.t))
+  let equal_node_id = Type.(unstage (equal P.Node.Key.t))
+  let equal_commit_id = Type.(unstage (equal P.Commit.Key.t))
 
   module Commit = struct
-    type t = { r : repo; h : Hash.t; v : P.Commit.value }
+    type t = commit
 
     let t r =
       let open Type in
-      record "commit" (fun h v -> { r; h; v })
-      |+ field "hash" Hash.t (fun t -> t.h)
+      record "commit" (fun id v -> { r; id; v })
+      |+ field "id" P.Commit.Key.t (fun t -> t.id)
       |+ field "value" P.Commit.Val.t (fun t -> t.v)
       |> sealr
 
@@ -100,27 +117,31 @@ module Make (P : Private.S) = struct
         | `Contents _ -> Lwt.fail_invalid_arg "cannot add contents at the root"
       in
       let v = P.Commit.Val.v ~info ~node ~parents in
-      let+ h = P.Commit.add commit_t v in
-      { r; h; v }
+      let+ id = P.Commit.add commit_t v in
+      { r; id; v }
 
     let node t = P.Commit.Val.node t.v
     let tree t = Tree.import_no_check t.r (`Node (node t))
-    let equal x y = equal_hash x.h y.h
-    let hash t = t.h
+    let equal x y = equal_commit_id x.id y.id
+    let id t = t.id
+    let hash t = P.Commit.Key.hash t.id
     let info t = P.Commit.Val.info t.v
     let parents t = P.Commit.Val.parents t.v
-    let pp_hash ppf t = Type.pp Hash.t ppf t.h
+    let pp_hash ppf t = Type.pp Hash.t ppf (hash t)
 
-    let of_hash r h =
-      P.Commit.find (P.Repo.commit_t r) h >|= function
+    let of_id r id =
+      P.Commit.find (P.Repo.commit_t r) id >|= function
       | None -> None
-      | Some v -> Some { r; h; v }
+      | Some v -> Some { r; id; v }
 
     let to_private_commit t = t.v
 
+    module H = Typed (P.Commit.Val)
+
     let of_private_commit r v =
-      let h = P.Commit.Key.hash v in
-      { r; h; v }
+      (* FIXME: missing metadata *)
+      let id = P.Commit.Key.v (H.hash v) in
+      { r; id; v }
 
     let equal_opt x y =
       match (x, y) with
@@ -128,8 +149,6 @@ module Make (P : Private.S) = struct
       | Some x, Some y -> equal x y
       | _ -> false
   end
-
-  type commit = Commit.t
 
   let to_private_node = Tree.to_private_node
   let of_private_node = Tree.of_private_node
@@ -140,7 +159,10 @@ module Make (P : Private.S) = struct
 
   module OCamlGraph = Graph
   module Graph = Node.Graph (P.Node)
-  module KGraph = Object_graph.Make (Hash) (Branch_store.Key)
+
+  module KGraph =
+    Object_graph.Make (P.Contents.Key) (P.Node.Key) (P.Commit.Key)
+      (Branch_store.Key)
 
   type slice = P.Slice.t [@@deriving irmin]
   type watch = unit -> unit Lwt.t
@@ -167,8 +189,8 @@ module Make (P : Private.S) = struct
         (fun acc r ->
           Branch_store.find t r >>= function
           | None -> Lwt.return acc
-          | Some h -> (
-              Commit.of_hash repo h >|= function
+          | Some k -> (
+              Commit.of_id repo k >|= function
               | None -> acc
               | Some h -> h :: acc))
         [] bs
@@ -183,8 +205,8 @@ module Make (P : Private.S) = struct
             | `Max m -> string_of_int (List.length m)));
       let* max = match max with `Head -> heads t | `Max m -> Lwt.return m in
       let* slice = P.Slice.empty () in
-      let max = List.map (fun x -> `Commit x.Commit.h) max in
-      let min = List.map (fun x -> `Commit x.Commit.h) min in
+      let max = List.map (fun x -> `Commit x.id) max in
+      let min = List.map (fun x -> `Commit x.id) min in
       let pred = function
         | `Commit k ->
             let+ parents = H.parents (history_t t) k in
@@ -247,11 +269,10 @@ module Make (P : Private.S) = struct
     let import_error fmt = Fmt.kstrf (fun x -> Lwt.fail (Import_error x)) fmt
 
     let import t s =
-      let aux name add (k, v) =
+      let aux name equal pp add (k, v) =
         let* k' = add v in
-        if not (equal_hash k k') then
-          import_error "%s import error: expected %a, got %a" name pp_hash k
-            pp_hash k'
+        if not (equal k k') then
+          import_error "%s import error: expected %a, got %a" name pp k pp k'
         else Lwt.return_unit
       in
       let contents = ref [] in
@@ -274,12 +295,18 @@ module Make (P : Private.S) = struct
         (fun () ->
           let* () =
             Lwt_list.iter_p
-              (aux "Contents" (P.Contents.add contents_t))
+              (aux "Contents" equal_contents_id pp_contents_id
+                 (P.Contents.add contents_t))
               !contents
           in
-          Lwt_list.iter_p (aux "Node" (P.Node.add node_t)) !nodes >>= fun () ->
+          Lwt_list.iter_p
+            (aux "Node" equal_node_id pp_node_id (P.Node.add node_t))
+            !nodes
+          >>= fun () ->
           let+ () =
-            Lwt_list.iter_p (aux "Commit" (P.Commit.add commit_t)) !commits
+            Lwt_list.iter_p
+              (aux "Commit" equal_commit_id pp_commit_id (P.Commit.add commit_t))
+              !commits
           in
           Ok ())
         (function
@@ -287,9 +314,9 @@ module Make (P : Private.S) = struct
           | e -> Fmt.kstrf Lwt.fail_invalid_arg "impot error: %a" Fmt.exn e)
 
     type elt =
-      [ `Commit of Hash.t
-      | `Node of Hash.t
-      | `Contents of Hash.t
+      [ `Commit of commit_id
+      | `Node of node_id
+      | `Contents of contents_id
       | `Branch of P.Branch.Key.t ]
     [@@deriving irmin]
 
@@ -309,7 +336,7 @@ module Make (P : Private.S) = struct
     let default_pred_commit t c =
       P.Commit.find (commit_t t) c >|= function
       | None ->
-          Log.debug (fun l -> l "%a: not found" (Type.pp Hash.t) c);
+          Log.debug (fun l -> l "%a: not found" pp_commit_id c);
           []
       | Some c ->
           let node = P.Commit.Val.node c in
@@ -408,7 +435,7 @@ module Make (P : Private.S) = struct
 
   let master repo = of_branch repo Branch_store.Key.master
   let empty repo = of_ref repo (`Head (ref None))
-  let of_commit c = of_ref c.Commit.r (`Head (ref (Some c)))
+  let of_commit c = of_ref c.r (`Head (ref (Some c)))
 
   let skip_key key =
     Log.debug (fun l -> l "[watch-key] key %a has not changed" pp_key key);
@@ -464,7 +491,7 @@ module Make (P : Private.S) = struct
       | `Branch name -> (
           Branch_store.find (branch_t t) name >>= function
           | None -> Lwt.return_none
-          | Some h -> Commit.of_hash t.repo h)
+          | Some k -> Commit.of_id t.repo k)
     in
     let+ h = h in
     Log.debug (fun f -> f "Head.find -> %a" Fmt.(option Commit.pp_hash) h);
@@ -491,19 +518,19 @@ module Make (P : Private.S) = struct
 
   let lift_head_diff repo fn = function
     | `Removed x -> (
-        Commit.of_hash repo x >>= function
+        Commit.of_id repo x >>= function
         | None -> Lwt.return_unit
         | Some x -> fn (`Removed x))
     | `Updated (x, y) -> (
-        let* x = Commit.of_hash repo x in
-        let* y = Commit.of_hash repo y in
+        let* x = Commit.of_id repo x in
+        let* y = Commit.of_id repo y in
         match (x, y) with
         | None, None -> Lwt.return_unit
         | Some x, None -> fn (`Removed x)
         | None, Some y -> fn (`Added y)
         | Some x, Some y -> fn (`Updated (x, y)))
     | `Added x -> (
-        Commit.of_hash repo x >>= function
+        Commit.of_id repo x >>= function
         | None -> Lwt.return_unit
         | Some x -> fn (`Added x))
 
@@ -514,7 +541,7 @@ module Make (P : Private.S) = struct
         let init =
           match init with
           | None -> None
-          | Some head0 -> Some [ (name0, head0.Commit.h) ]
+          | Some head0 -> Some [ (name0, head0.id) ]
         in
         let+ id =
           Branch_store.watch (branch_t t) ?init (fun name head ->
@@ -540,7 +567,7 @@ module Make (P : Private.S) = struct
       | `Head h ->
           h := Some c;
           Lwt.return_unit
-      | `Branch name -> Branch_store.set (branch_t t) name c.Commit.h
+      | `Branch name -> Branch_store.set (branch_t t) name c.id
 
     let test_and_set_unsafe t ~test ~set =
       match t.head_ref with
@@ -551,7 +578,7 @@ module Make (P : Private.S) = struct
             Lwt.return_true)
           else Lwt.return_false
       | `Branch name ->
-          let h = function None -> None | Some c -> Some c.Commit.h in
+          let h = function None -> None | Some c -> Some c.id in
           Branch_store.test_and_set (branch_t t) name ~test:(h test)
             ~set:(h set)
 
@@ -572,10 +599,9 @@ module Make (P : Private.S) = struct
             (* we only update if there is a change *)
             Lwt.return (Error `No_change)
           else
-            H.lcas (history_t t) ?max_depth ?n new_head.Commit.h
-              old_head.Commit.h
+            H.lcas (history_t t) ?max_depth ?n new_head.id old_head.id
             >>= function
-            | Ok [ x ] when equal_hash x old_head.Commit.h ->
+            | Ok [ x ] when equal_commit_id x old_head.id ->
                 (* we only update if new_head > old_head *)
                 test_and_set t ~test:(Some old_head) ~set:(Some new_head)
                 >|= return
@@ -587,7 +613,7 @@ module Make (P : Private.S) = struct
        - Perform recursive 3-way merges *)
     let three_way_merge t ?max_depth ?n ~info c1 c2 =
       P.Repo.batch (repo t) @@ fun _ _ commit_t ->
-      H.three_way_merge commit_t ?max_depth ?n ~info c1.Commit.h c2.Commit.h
+      H.three_way_merge commit_t ?max_depth ?n ~info c1.id c2.id
 
     (* FIXME: we might want to keep the new commit in case of conflict,
          and use it as a base for the next merge. *)
@@ -599,7 +625,7 @@ module Make (P : Private.S) = struct
         | None -> test_and_set_unsafe t ~test:head ~set:(Some c1) >>= Merge.ok
         | Some c2 ->
             three_way_merge t ~info ?max_depth ?n c1 c2 >>=* fun c3 ->
-            let* c3 = Commit.of_hash t.repo c3 in
+            let* c3 = Commit.of_id t.repo c3 in
             test_and_set_unsafe t ~test:head ~set:c3 >>= Merge.ok
       in
       Lwt_mutex.with_lock t.lock (fun () -> retry_merge "merge_head" aux)
@@ -640,10 +666,8 @@ module Make (P : Private.S) = struct
         (* concurrent handlers and/or process can modify the
            branch. Need to check that we are still working on the same
            head. *)
-        let test =
-          match old_head with None -> None | Some c -> Some (Commit.hash c)
-        in
-        let set = Some (Commit.hash c) in
+        let test = match old_head with None -> None | Some c -> Some c.id in
+        let set = Some c.id in
         let+ r = Branch_store.test_and_set (branch_t t) name ~test ~set in
         if r then t.tree <- Some tree;
         r
@@ -703,7 +727,7 @@ module Make (P : Private.S) = struct
       | Ok root ->
           let info = info () in
           let parents = match parents with None -> s.parents | Some p -> p in
-          let parents = List.map Commit.hash parents in
+          let parents = List.map Commit.id parents in
           let* c = Commit.v (repo t) ~info ~parents root in
           let* r = add_commit t s.head (c, root_tree (Tree.destruct root)) in
           Lwt.return (Ok r)
@@ -805,6 +829,14 @@ module Make (P : Private.S) = struct
   let find_tree t k = tree t >>= fun tree -> Tree.find_tree tree k
   let get_tree t k = tree t >>= fun tree -> Tree.get_tree tree k
 
+  let id t k =
+    find_tree t k >|= function
+    | None -> None
+    | Some tree -> (
+        match Tree.id tree with
+        | `Contents (id, _) -> Some (`Contents id)
+        | `Node id -> Some (`Node id))
+
   let hash t k =
     find_tree t k >|= function
     | None -> None
@@ -862,31 +894,27 @@ module Make (P : Private.S) = struct
     let* () =
       Head.find src >>= function
       | None -> Branch_store.remove (branch_t src) dst
-      | Some h -> Branch_store.set (branch_t src) dst h.Commit.h
+      | Some h -> Branch_store.set (branch_t src) dst h.id
     in
     of_branch (repo src) dst
 
   let return_lcas r = function
     | Error _ as e -> Lwt.return e
-    | Ok commits ->
-        Lwt_list.filter_map_p (Commit.of_hash r) commits >|= Result.ok
+    | Ok commits -> Lwt_list.filter_map_p (Commit.of_id r) commits >|= Result.ok
 
   let lcas ?max_depth ?n t1 t2 =
     let* h1 = Head.get t1 in
     let* h2 = Head.get t2 in
-    H.lcas (history_t t1) ?max_depth ?n h1.Commit.h h2.Commit.h
-    >>= return_lcas t1.repo
+    H.lcas (history_t t1) ?max_depth ?n h1.id h2.id >>= return_lcas t1.repo
 
   let lcas_with_commit t ?max_depth ?n c =
     let* h = Head.get t in
-    H.lcas (history_t t) ?max_depth ?n h.Commit.h c.Commit.h
-    >>= return_lcas t.repo
+    H.lcas (history_t t) ?max_depth ?n h.id c.id >>= return_lcas t.repo
 
   let lcas_with_branch t ?max_depth ?n b =
     let* h = Head.get t in
     let* head = Head.get { t with head_ref = `Branch b } in
-    H.lcas (history_t t) ?max_depth ?n h.Commit.h head.Commit.h
-    >>= return_lcas t.repo
+    H.lcas (history_t t) ?max_depth ?n h.id head.id >>= return_lcas t.repo
 
   module Private = P
 
@@ -904,7 +932,7 @@ module Make (P : Private.S) = struct
         Fmt.kstrf Lwt.fail_invalid_arg
           "merge_with_branch: %a is not a valid branch ID" pp_branch other
     | Some c -> (
-        Commit.of_hash t.repo c >>= function
+        Commit.of_id t.repo c >>= function
         | None -> Lwt.fail_invalid_arg "invalid commit"
         | Some c -> Head.merge ~into:t ~info ?max_depth ?n c)
 
@@ -921,14 +949,14 @@ module Make (P : Private.S) = struct
   module History = OCamlGraph.Persistent.Digraph.ConcreteBidirectional (struct
     type t = commit
 
-    let hash h = P.Commit.Key.short_hash h.Commit.h
-    let compare_key = Type.(unstage (compare P.Commit.Key.t))
-    let compare x y = compare_key x.Commit.h y.Commit.h
-    let equal x y = equal_hash x.Commit.h y.Commit.h
+    let hash h = P.Hash.short_hash (Commit.hash h)
+    let compare_id = Type.(unstage (compare P.Commit.Key.t))
+    let compare x y = compare_id x.id y.id
+    let equal x y = equal_commit_id x.id y.id
   end)
 
   module Gmap = struct
-    module Src = Object_graph.Make (Hash) (Branch_store.Key)
+    module Src = KGraph
 
     module Dst = struct
       include History
@@ -963,16 +991,16 @@ module Make (P : Private.S) = struct
     let pred = function
       | `Commit k ->
           H.parents (history_t t) k
-          >>= Lwt_list.filter_map_p (Commit.of_hash t.repo)
-          >|= fun parents -> List.map (fun x -> `Commit x.Commit.h) parents
+          >>= Lwt_list.filter_map_p (Commit.of_id t.repo)
+          >|= fun parents -> List.map (fun x -> `Commit x.id) parents
       | _ -> Lwt.return_nil
     in
     let* max = Head.find t >|= function Some h -> [ h ] | None -> max in
-    let max = List.map (fun k -> `Commit k.Commit.h) max in
-    let min = List.map (fun k -> `Commit k.Commit.h) min in
+    let max = List.map (fun k -> `Commit k.id) max in
+    let min = List.map (fun k -> `Commit k.id) min in
     let* g = Gmap.Src.closure ?depth ~min ~max ~pred () in
     Gmap.filter_map
-      (function `Commit k -> Commit.of_hash t.repo k | _ -> Lwt.return_none)
+      (function `Commit k -> Commit.of_id t.repo k | _ -> Lwt.return_none)
       g
 
   module Heap = Binary_heap.Make (struct
@@ -1011,7 +1039,7 @@ module Make (P : Private.S) = struct
           let* found =
             Lwt_list.for_all_p
               (fun hash ->
-                Commit.of_hash repo hash >>= function
+                Commit.of_id repo hash >>= function
                 | Some commit -> (
                     let () =
                       if not max_depth then
@@ -1039,14 +1067,14 @@ module Make (P : Private.S) = struct
     let find t br =
       P.Branch.find (Repo.branch_t t) br >>= function
       | None -> Lwt.return_none
-      | Some h -> Commit.of_hash t h
+      | Some h -> Commit.of_id t h
 
-    let set t br h = P.Branch.set (P.Repo.branch_t t) br (Commit.hash h)
+    let set t br h = P.Branch.set (P.Repo.branch_t t) br h.id
     let remove t = P.Branch.remove (P.Repo.branch_t t)
     let list = Repo.branches
 
     let watch t k ?init f =
-      let init = match init with None -> None | Some h -> Some h.Commit.h in
+      let init = match init with None -> None | Some h -> Some h.id in
       let+ w =
         P.Branch.watch_key (Repo.branch_t t) k ?init (lift_head_diff t f)
       in
@@ -1056,7 +1084,7 @@ module Make (P : Private.S) = struct
       let init =
         match init with
         | None -> None
-        | Some i -> Some (List.map (fun (k, v) -> (k, v.Commit.h)) i)
+        | Some i -> Some (List.map (fun (k, v) -> (k, v.id)) i)
       in
       let f k v = lift_head_diff t (f k) v in
       let+ w = P.Branch.watch (Repo.branch_t t) ?init f in

@@ -22,6 +22,7 @@ module type S = sig
   type step
   type metadata
   type contents
+  type id
   type node
   type hash
 
@@ -76,9 +77,9 @@ module type S = sig
     type t
     (** The type of lazy tree contents. *)
 
-    val hash : t -> hash
-    (** [hash t] is the hash of the {!contents} value returned when [t] is
-        {!force}d successfully. *)
+    val id : t -> id
+    (** [id t] is the ID of the {!contents} value returned when [t] is {!force}d
+        successfully. *)
 
     val force : t -> contents or_error Lwt.t
     (** [force t] forces evaluation of the lazy content value [t], or returns an
@@ -286,7 +287,7 @@ module type S = sig
   val counters : unit -> counters
   val dump_counters : unit Fmt.t
   val reset_counters : unit -> unit
-  val inspect : t -> [ `Contents | `Node of [ `Map | `Hash | `Value ] ]
+  val inspect : t -> [ `Contents | `Node of [ `Map | `Id | `Value ] ]
 end
 
 module type Sigs = sig
@@ -302,12 +303,15 @@ module type Sigs = sig
          and type step = P.Node.Path.step
          and type metadata = P.Node.Metadata.t
          and type contents = P.Contents.value
+         and type id = P.Contents.Key.t
          and type hash = P.Hash.t
 
-    type kinded_hash := [ `Contents of hash * metadata | `Node of hash ]
+    type kinded_id =
+      [ `Contents of P.Contents.Key.t * metadata | `Node of P.Node.Key.t ]
+    [@@deriving irmin]
 
-    val import : P.Repo.t -> kinded_hash -> t option Lwt.t
-    val import_no_check : P.Repo.t -> kinded_hash -> t
+    val import : P.Repo.t -> kinded_id -> t option Lwt.t
+    val import_no_check : P.Repo.t -> kinded_id -> t
 
     val export :
       ?clear:bool ->
@@ -321,7 +325,7 @@ module type Sigs = sig
     val equal : t -> t -> bool
     val node_t : node Type.t
     val tree_t : t Type.t
-    val hash : t -> kinded_hash
+    val id : t -> kinded_id
     val of_private_node : P.Repo.t -> P.Node.value -> node
     val to_private_node : node -> P.Node.value or_error Lwt.t
   end

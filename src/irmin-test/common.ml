@@ -94,6 +94,16 @@ end
 module Make_helpers (S : S) = struct
   module P = S.Private
   module Graph = Irmin.Private.Node.Graph (P.Node)
+  module H_node = Irmin.Hash.Typed (P.Hash) (P.Node.Val)
+  module H_contents = Irmin.Hash.Typed (P.Hash) (P.Contents.Val)
+
+  let get_contents_id = function
+    | `Contents id -> id
+    | _ -> Alcotest.fail "expecting contents_id"
+
+  let get_node_id = function
+    | `Node id -> id
+    | _ -> Alcotest.fail "expecting node_id"
 
   let v repo = P.Repo.contents_t repo
   let n repo = P.Repo.node_t repo
@@ -106,6 +116,7 @@ module Make_helpers (S : S) = struct
   let with_contents repo f = P.Repo.batch repo (fun t _ _ -> f t)
   let with_node repo f = P.Repo.batch repo (fun _ t _ -> f t)
   let with_commit repo f = P.Repo.batch repo (fun _ _ t -> f t)
+  let with_info repo n f = with_commit repo (fun h -> f h ~info:(info n))
   let kv1 ~repo = with_contents repo (fun t -> P.Contents.add t v1)
   let kv2 ~repo = with_contents repo (fun t -> P.Contents.add t v2)
   let normal x = `Contents (x, S.Metadata.default)
@@ -135,7 +146,7 @@ module Make_helpers (S : S) = struct
 
   let r1 ~repo =
     let* kn2 = n2 ~repo in
-    S.Tree.of_hash repo (`Node kn2) >>= function
+    S.Tree.of_id repo (`Node kn2) >>= function
     | None -> Alcotest.fail "r1"
     | Some tree ->
         S.Commit.v repo ~info:Irmin.Info.empty ~parents:[] (tree :> S.tree)
@@ -143,10 +154,10 @@ module Make_helpers (S : S) = struct
   let r2 ~repo =
     let* kn3 = n3 ~repo in
     let* kr1 = r1 ~repo in
-    S.Tree.of_hash repo (`Node kn3) >>= function
+    S.Tree.of_id repo (`Node kn3) >>= function
     | None -> Alcotest.fail "r2"
     | Some t3 ->
-        S.Commit.v repo ~info:Irmin.Info.empty ~parents:[ S.Commit.hash kr1 ]
+        S.Commit.v repo ~info:Irmin.Info.empty ~parents:[ S.Commit.id kr1 ]
           (t3 :> S.tree)
 
   let run x test =
