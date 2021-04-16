@@ -186,10 +186,12 @@ struct
               ~fresh ~readonly ~throttle ~log_size root
           in
           let* contents =
-            Contents.CA.v ~fresh ~readonly ~lru_size ~index root
+            Contents.CA.v ~fresh ~readonly ~lru_size ~index ~kind:`Contents root
           in
           let* node = Node.CA.v ~fresh ~readonly ~lru_size ~index root in
-          let* commit = Commit.CA.v ~fresh ~readonly ~lru_size ~index root in
+          let* commit =
+            Commit.CA.v ~fresh ~readonly ~lru_size ~index ~kind:`Commit root
+          in
           let+ branch = Branch.v ~fresh ~readonly root in
           (* Stores share instances in memory, one flush is enough. In case of a
              system crash, the flush_callback might not make with the disk. In

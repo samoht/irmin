@@ -1257,7 +1257,7 @@ struct
     Lwt.return (save t v)
 
   let batch = Pack.batch
-  let v = Pack.v
+  let v = Pack.v ~kind:`Node
   let integrity_check = Pack.integrity_check
   let close = Pack.close
   let sync = Pack.sync

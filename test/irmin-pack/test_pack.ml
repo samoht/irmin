@@ -309,7 +309,9 @@ module Pack = struct
   let test_reuse_index () =
     (* index and pack with different names. However, this behaviour is not exposed by irmin_pack.*)
     let index = Index.v ~log_size:4 ~fresh:true (Context.fresh_name "index") in
-    let* w1 = Pack.v ~fresh:true ~index (Context.fresh_name "pack") in
+    let* w1 =
+      Pack.v ~fresh:true ~index (Context.fresh_name "pack") ~kind:`Commit
+    in
     let x1 = "foo" in
     let h1 = sha1 x1 in
     let k1 =

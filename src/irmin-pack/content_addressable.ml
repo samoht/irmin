@@ -125,14 +125,14 @@ module Maker (V : Version.S) (Index : Pack_index.S) = struct
       if index then Index.flush ~no_callback:() t.pack.index;
       Tbl.clear t.staging
 
-    let unsafe_v_no_cache ~fresh ~readonly ~lru_size ~index root =
+    let unsafe_v_no_cache ~fresh ~readonly ~lru_size ~index ~kind root =
       let pack = v index ~fresh ~readonly root in
       let staging = Tbl.create 127 in
       let lru = Lru.create lru_size in
-      { staging; lru; pack; open_instances = 1; readonly }
+      { kind; staging; lru; pack; open_instances = 1; readonly }
 
     let unsafe_v ?(fresh = false) ?(readonly = false) ?(lru_size = 10_000)
-        ~index root =
+        ~index ~kind root =
       try
         let t = Hashtbl.find roots (root, readonly) in
         if valid t then (
@@ -142,13 +142,15 @@ module Maker (V : Version.S) (Index : Pack_index.S) = struct
           Hashtbl.remove roots (root, readonly);
           raise Not_found)
       with Not_found ->
-        let t = unsafe_v_no_cache ~fresh ~readonly ~lru_size ~index root in
+        let t =
+          unsafe_v_no_cache ~fresh ~readonly ~lru_size ~index ~kind root
+        in
         if fresh then unsafe_clear t;
         Hashtbl.add roots (root, readonly) t;
         t
 
-    let v ?fresh ?readonly ?lru_size ~index root =
-      let t = unsafe_v ?fresh ?readonly ?lru_size ~index root in
+    let v ?fresh ?readonly ?lru_size ~index ~kind root =
+      let t = unsafe_v ?fresh ?readonly ?lru_size ~index ~kind root in
       Lwt.return t
 
     let pp_key = Irmin.Type.pp K.t
@@ -261,7 +263,8 @@ module Maker (V : Version.S) (Index : Pack_index.S) = struct
         let k = K.v ~metadata:off h in
         Val.encode_bin ~offset ~dict v k (IO.append t.pack.block);
         let len = Int63.to_int (IO.offset t.pack.block -- off) in
-        Index.add ~overcommit t.pack.index h (off, len, Val.magic v);
+        if t.kind = `Commit then
+          Index.add ~overcommit t.pack.index h (off, len, Val.magic v);
         if Tbl.length t.staging >= auto_flush then flush t
         else Tbl.add t.staging h (k, v);
         Lru.add t.lru h (k, v);
@@ -362,8 +365,8 @@ module Closeable (S : S) = struct
     check_not_closed t;
     S.batch t.t (fun w -> f { t = w; closed = t.closed })
 
-  let v ?fresh ?readonly ?lru_size ~index root =
-    let+ t = S.v ?fresh ?readonly ?lru_size ~index root in
+  let v ?fresh ?readonly ?lru_size ~index ~kind root =
+    let+ t = S.v ?fresh ?readonly ?lru_size ~index ~kind root in
     { closed = ref false; t }
 
   let close t =

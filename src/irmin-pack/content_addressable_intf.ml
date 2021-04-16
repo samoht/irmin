@@ -53,6 +53,7 @@ module type S = sig
     ?readonly:bool ->
     ?lru_size:int ->
     index:index ->
+    kind:[ `Contents | `Node | `Commit ] ->
     string ->
     read t Lwt.t
 
