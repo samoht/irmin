@@ -15,16 +15,7 @@
  *)
 
 open Irmin.Export_for_backends
-
-module Int63 = struct
-  include Optint.Int63
-
-  let t : t Irmin.Type.t =
-    let open Irmin.Type in
-    (map int64) of_int64 to_int64
-    |> like ~pp:Optint.Int63.pp ~equal:(stage Optint.Int63.equal)
-         ~compare:(stage Optint.Int63.compare)
-end
+module Int63 = Optint.Int63
 
 module Dict = Irmin_pack.Dict.Make (struct
   let version = `V2
@@ -54,7 +45,7 @@ end
 
 module H = Irmin.Hash.SHA1
 module I = Index
-module K = Irmin.Key.Make (H) (Int63)
+module K = Irmin_pack.Key.Make (H)
 module Index = Irmin_pack.Index.Make (K.Hash)
 
 module S = struct

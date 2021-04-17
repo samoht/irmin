@@ -128,6 +128,7 @@ module Make (P : Private.S) = struct
     let info t = P.Commit.Val.info t.v
     let parents t = P.Commit.Val.parents t.v
     let pp_hash ppf t = Type.pp Hash.t ppf (hash t)
+    let pp_id ppf t = Type.pp P.Commit.Key.t ppf t.id
 
     let of_id r id =
       P.Commit.find (P.Repo.commit_t r) id >|= function
@@ -494,7 +495,7 @@ module Make (P : Private.S) = struct
           | Some k -> Commit.of_id t.repo k)
     in
     let+ h = h in
-    Log.debug (fun f -> f "Head.find -> %a" Fmt.(option Commit.pp_hash) h);
+    Log.debug (fun f -> f "Head.find -> %a" Fmt.(option Commit.pp_id) h);
     h
 
   let tree_and_head t =

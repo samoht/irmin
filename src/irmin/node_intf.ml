@@ -106,17 +106,21 @@ end
 
 module type Maker = sig
   module Make
-      (H : Hash.S)
-      (C : Key.Abstract with type hash = H.t)
-      (N : Key.Abstract with type hash = H.t) (P : sig
+      (C : Key.S)
+      (N : Key.Poly with type hash = C.hash) (P : sig
         type step [@@deriving irmin]
       end)
-      (M : Metadata) :
-    S
-      with type metadata = M.t
-       and type contents = C.t
-       and type node = N.t
-       and type step = P.step
+      (M : Metadata) : sig
+    type t
+
+    include
+      S
+        with type t := t
+         and type metadata = M.t
+         and type contents = C.t
+         and type node = t N.t
+         and type step = P.step
+  end
 end
 
 module type Store = sig
@@ -141,6 +145,8 @@ module type Store = sig
        and type node = key
        and type metadata = Metadata.t
        and type step = Path.step
+
+  module Hash : Hash.Typed with type t = hash and type value = value
 
   module Contents : Contents.Store with type key = Val.contents
   (** [Contents] is the underlying contents store. *)

@@ -29,9 +29,10 @@ end
 
 let log_size = 1000
 
+module A = Irmin.Key.Abstract (K)
 module Path = Irmin.Path.String_list
 module Metadata = Irmin.Metadata.None
-module Node = Irmin.Private.Node.Make (H) (K) (K) (Path) (Metadata)
+module Node = Irmin.Private.Node.Make (A) (A) (Path) (Metadata)
 module Index = Irmin_pack.Index.Make (K.Hash)
 module Inter = Irmin_pack.Inode.Make_internal (Conf) (K) (Node)
 module Inode = Irmin_pack.Inode.Make_ext (K) (Node) (Inter) (P)

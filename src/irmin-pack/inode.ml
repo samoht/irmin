@@ -19,7 +19,7 @@ include Inode_intf
 
 module Make_internal
     (Conf : Conf.S)
-    (K : S.Key)
+    (K : Key.S)
     (Node : Irmin.Private.Node.S with type node = K.t and type contents = K.t) =
 struct
   let () =
@@ -36,6 +36,7 @@ struct
   module H = K.Hash
 
   module T = struct
+    type key = K.t [@@deriving irmin]
     type hash = H.t [@@deriving irmin]
     type contents = Node.contents [@@deriving irmin]
     type node = Node.node [@@deriving irmin]
@@ -47,15 +48,11 @@ struct
     type value = Node.value
 
     let value_t = Node.value_t
-    let pp_id = K.dump
+    let pp_key = Irmin.Type.pp K.t
     let pp_hash = Irmin.Type.pp H.t
   end
 
-  type key = K.t
-  type hash = T.hash
-
-  let pp_hash = T.pp_hash
-  let pp_key = K.dump
+  include T
 
   module StepMap = struct
     include Map.Make (struct
@@ -365,7 +362,7 @@ struct
             | t -> (
                 let id = key layout t in
                 match find id with
-                | None -> Fmt.failwith "%a: unknown key" pp_id id
+                | None -> Fmt.failwith "%a: unknown key" pp_key id
                 | Some x ->
                     t.target <- Some x;
                     x))
@@ -720,9 +717,9 @@ struct
           let key =
             lazy
               (let vs = list layout t in
-               let metadata = K.metadata (Lazy.force t.key) in
+               (* let metadata = K.metadata (Lazy.force t.key) in *)
                let hash = Node.hash (Node.v vs) in
-               K.v ?metadata hash)
+               K.v (* ?metadata *) hash)
           in
           { key; stable = true; v = t.v }
 
@@ -912,7 +909,7 @@ struct
               "You are trying to save to the backend an inode deserialized \
                using [Irmin.Type] that used to contain pointer(s) to inodes \
                which are unknown to the backend. Hash: %a"
-              pp_id h
+              pp_key h
           else
             (* The backend already knows this target inode, there is no need to
                traverse further down. This happens during the unit tests. *)
@@ -1202,7 +1199,7 @@ struct
 end
 
 module Make_ext
-    (K : S.Key)
+    (K : Key.S)
     (Node : Irmin.Private.Node.S with type node = K.t and type contents = K.t)
     (Inter : Internal
                with type key = K.t
@@ -1283,7 +1280,7 @@ end
 
 module Make
     (Conf : Conf.S)
-    (K : S.Key)
+    (K : Key.S)
     (CA : Content_addressable.Maker
             with type hash = K.hash
              and type index = Pack_index.Make(K.Hash).t)

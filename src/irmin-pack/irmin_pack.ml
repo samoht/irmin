@@ -15,7 +15,6 @@
  *)
 
 include Ext
-include Irmin_pack_intf
 
 let config = Conf.v
 
@@ -31,9 +30,8 @@ module Maker_ext = Ext.Maker
 module Version = Version
 module Index = Pack_index
 module Conf = Conf
-module Key = Ext.Key
+module Key = Key
 
-module type Key = S.Key
 module type Maker = S.Maker
 module type Specifics = S.Specifics
 

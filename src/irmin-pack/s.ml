@@ -81,8 +81,6 @@ module type S = sig
   val reconstruct_index : ?output:string -> Irmin.config -> unit
 end
 
-module type Key = Irmin.Key.S with type metadata = int63
-
 module type Maker = sig
   type endpoint = unit
 
@@ -100,5 +98,8 @@ module type Maker = sig
        and type step = Path.step
        and type metadata = Metadata.t
        and type Key.step = Path.step
+       and type contents_id = Key.Make(Hash).t
+       and type node_id = Key.Make(Hash).t
+       and type commit_id = Key.Make(Hash).t
        and type Private.Remote.endpoint = endpoint
 end

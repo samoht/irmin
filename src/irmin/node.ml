@@ -23,9 +23,8 @@ let src = Logs.Src.create "irmin.node" ~doc:"Irmin trees/nodes"
 module Log = (val Logs.src_log src : Logs.LOG)
 
 module Make
-    (H : Hash.S)
-    (C : Key.Abstract with type hash = H.t)
-    (N : Key.Abstract with type hash = H.t) (P : sig
+    (C : Key.Abstract)
+    (N : Key.Abstract with type hash = C.hash) (P : sig
       type step [@@deriving irmin]
     end)
     (M : Metadata.S) =
@@ -34,13 +33,21 @@ struct
   type node = N.t
   type step = P.step [@@deriving irmin]
   type metadata = M.t [@@deriving irmin]
+  type hash = C.hash
 
-  let contents_t = Type.map ~pp:C.dump H.t C.v C.hash
-  let node_t = Type.map ~pp:N.dump H.t N.v N.hash
+  let hash_t = C.hash_t ()
+  let contents_t = C.t ()
+  let node_t = N.t ()
   let equal_metadata = Type.(unstage (equal M.t))
 
   type value = [ `Contents of contents * metadata | `Node of node ]
   [@@deriving irmin]
+
+  module StepMap = Map.Make (struct
+    type t = P.step
+
+    let compare = Type.(unstage (compare step_t))
+  end)
 
   type node_entry = { name : P.step; node : node } [@@deriving irmin]
 
@@ -67,12 +74,6 @@ struct
     | Node n -> (n.name, `Node n.node)
     | Contents c -> (c.name, `Contents (c.contents, M.default))
     | Contents_m c -> (c.name, `Contents (c.contents, c.metadata))
-
-  module StepMap = Map.Make (struct
-    type t = P.step
-
-    let compare = Type.(unstage (compare step_t))
-  end)
 
   type t = entry StepMap.t
 
@@ -122,7 +123,43 @@ struct
 
   let of_entries e = v (List.rev_map of_entry e)
   let entries e = List.rev_map (fun (_, e) -> e) (StepMap.bindings e)
-  let t = Type.map Type.(list entry_t) of_entries entries
+
+  module Pre_hash = struct
+    type kind = Node | Contents of M.t
+
+    let kind_t =
+      let open Type in
+      variant "Tree.kind" (fun node contents contents_m -> function
+        | Node -> node
+        | Contents m ->
+            if equal_metadata m M.default then contents else contents_m m)
+      |~ case0 "node" Node
+      |~ case0 "contents" (Contents M.default)
+      |~ case1 "contents" M.t (fun m -> Contents m)
+      |> sealv
+
+    type entry' = { kind : kind; name : P.step; node : hash } [@@deriving irmin]
+
+    let to_entry (e : entry) =
+      match e with
+      | Node { name; node } -> { name; kind = Node; node = N.hash node }
+      | Contents { name; contents } ->
+          { name; kind = Contents M.default; node = C.hash contents }
+      | Contents_m { name; metadata; contents } ->
+          { name; kind = Contents metadata; node = C.hash contents }
+
+    type t = entry' list [@@deriving irmin]
+  end
+
+  let pre_hash =
+    let f = Type.(unstage (pre_hash Pre_hash.t)) in
+    Type.stage (fun x ->
+        let t =
+          List.rev_map (fun (_, e) -> Pre_hash.to_entry e) (StepMap.bindings x)
+        in
+        f t)
+
+  let t = Type.map Type.(list entry_t) ~pre_hash of_entries entries
 end
 
 module Store

@@ -25,7 +25,7 @@ end
 module Dict : Irmin_pack.Dict.S
 module H = Irmin.Hash.SHA1
 module I = Index
-module K : Irmin_pack.Key with type hash = H.t
+module K : Irmin_pack.Key.S with type hash = H.t
 
 module Filename : sig
   include module type of Filename

@@ -308,6 +308,7 @@ module Make (S : S) = struct
         Irmin.Info.v ~date:(Int64.of_int date) ~author:"test" msg
       in
       let check_keys = checks P.Commit.Key.t in
+      let equal_key = Irmin.Type.(unstage (equal P.Commit.Key.t)) in
       let h = h repo in
       let initialise_nodes =
         Lwt_list.map_p
@@ -397,7 +398,7 @@ module Make (S : S) = struct
       in
       let* () =
         let+ ls = History.closure h ~min:[ commits.(7) ] ~max:[ commits.(6) ] in
-        if List.mem commits.(7) ls then
+        if List.exists (equal_key commits.(7)) ls then
           Alcotest.fail "disconnected node should not be in closure"
       in
       let* krs =
@@ -412,7 +413,7 @@ module Make (S : S) = struct
             ~min:[ commits.(4); commits.(0) ]
             ~max:[ commits.(4); commits.(6) ]
         in
-        if List.mem commits.(0) ls then
+        if List.exists (equal_key commits.(0)) ls then
           Alcotest.fail "disconnected node should not be in closure"
       in
       S.Repo.close repo
@@ -1622,7 +1623,7 @@ module Make (S : S) = struct
           S.Branch.set repo "foo" k >>= fun () ->
           let* t = S.of_branch repo "foo" in
           let* vy' = S.find t [ "u"; "x"; "y" ] in
-          check_val "vy after merge" None vy';
+          check_val "vy XXX after merge" None vy';
           P.Repo.close repo
     in
     run x test

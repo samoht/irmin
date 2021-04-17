@@ -17,29 +17,6 @@
 open! Import
 module IO = IO.Unix
 
-module Key (H : Irmin.Hash.S) = struct
-  module Hash = H
-
-  type hash = H.t
-  type metadata = int63
-  type t = { hash : hash; metadata : metadata option }
-
-  let t : t Irmin.Type.t =
-    Irmin.Type.map H.t (fun hash -> { hash; metadata = None }) (fun t -> t.hash)
-
-  let pp_hash = Irmin.Type.pp H.t
-  let pp_id = Irmin.Type.pp Int63.t
-
-  let dump ppf t =
-    match t.metadata with
-    | None -> Fmt.pf ppf "[%a]" pp_hash t.hash
-    | Some id -> Fmt.pf ppf "[%a:%a]" pp_hash t.hash pp_id id
-
-  let hash t = t.hash
-  let metadata t = t.metadata
-  let v ?metadata hash = { hash; metadata }
-end
-
 module Maker
     (V : Version.S)
     (Config : Conf.S)
@@ -55,7 +32,8 @@ struct
       (B : Irmin.Branch.S)
       (H : Irmin.Hash.S) =
   struct
-    module K = Key (H)
+    module K = Key.Make (H)
+    module A = Irmin.Key.Abstract (K)
     module Index = Pack_index.Make (K.Hash)
     module Pack = Content_addressable.Maker (V) (Index)
     module Dict = Pack_dict.Make (V)
@@ -98,13 +76,37 @@ struct
       end
 
       module Node = struct
-        module Node = Node.Make (H) (K) (K) (P) (M)
+        module Node = Node.Make (A) (A) (P) (M)
         module CA = Inode.Make (Config) (K) (Pack) (Node)
         include Irmin.Private.Node.Store (Contents) (CA) (K) (CA.Val) (M) (P)
       end
 
       module Commit = struct
-        module Commit = Commit.Make (H) (K) (K)
+        module Pre_hash = Commit.Make (A) (A)
+
+        module Commit = struct
+          type node = K.t [@@deriving irmin]
+          type commit = K.t [@@deriving irmin]
+
+          type t = { node : node; parents : commit list; info : Irmin.Info.t }
+          [@@deriving irmin]
+
+          let to_p { node; parents; info } = Pre_hash.v ~info ~parents ~node
+
+          let pre_hash =
+            let f = Irmin.Type.(unstage (pre_hash Pre_hash.t)) in
+            Irmin.Type.stage (fun x -> f (to_p x))
+
+          let t : t Irmin.Type.t = Irmin.Type.like ~pre_hash t
+          let parents t = t.parents
+          let node t = t.node
+          let info t = t.info
+          let compare_commit = Irmin.Type.(unstage (compare commit_t))
+
+          let v ~info ~node ~parents =
+            let parents = List.fast_sort compare_commit parents in
+            { node; parents; info }
+        end
 
         module CA = struct
           module CA_Pack =
@@ -259,7 +261,7 @@ struct
                           IO.read_buffer ~chunk:Hash.hash_size ~off pack
                         in
                         let hash = decode_key buf 0 |> snd in
-                        K.v ~metadata:off hash
+                        K.of_offset off hash
                       in
                       let dict = Dict.find dict in
                       Node.CA.decode_bin ~key ~dict buf 0

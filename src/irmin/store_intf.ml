@@ -872,16 +872,21 @@ module type S = sig
   module Private : sig
     include
       Private.S
-        with type Contents.value = contents
-         and module Hash = Hash
-         and module Node.Path = Key
+        with type Contents.key = contents_id
+         and type Contents.value = contents
+         and type Node.key = node_id
          and type Node.Metadata.t = metadata
+         and type Node.Val.node = node_id
+         and type Node.Val.contents = contents_id
+         and type Commit.key = commit_id
+         and type Commit.Val.node = node_id
+         and type Commit.Val.commit = commit_id
          and type Branch.key = branch
+         and type Branch.value = commit_id
          and type Slice.t = slice
          and type Repo.t = repo
-         and type Contents.key = contents_id
-         and type Node.key = node_id
-         and type Commit.key = commit_id
+         and module Hash = Hash
+         and module Node.Path = Key
   end
 
   type Remote.t +=

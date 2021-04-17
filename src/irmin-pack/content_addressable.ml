@@ -24,8 +24,6 @@ module Table (K : Irmin.Hash.S) = Hashtbl.Make (struct
   let equal = Irmin.Type.(unstage (equal K.t))
 end)
 
-module type Key = Irmin.Key.S with type metadata = int63
-
 module Maker (V : Version.S) (Index : Pack_index.S) = struct
   module IO_cache = IO.Cache
   module IO = IO.Unix
@@ -72,7 +70,7 @@ module Maker (V : Version.S) (Index : Pack_index.S) = struct
       Dict.close t.dict)
 
   module Make
-      (K : S.Key with type hash = hash)
+      (K : Key.S with type hash = hash)
       (Val : Value with type key := K.t and type hash := hash) =
   struct
     module Tbl = Table (K.Hash)
@@ -84,7 +82,9 @@ module Maker (V : Version.S) (Index : Pack_index.S) = struct
       let equal = Irmin.Type.(unstage (equal K.Hash.t))
     end)
 
-    type kind = [ `Commit | `Node | `Contents ]
+    type kind = [ `Commit | `Node | `Contents ] [@@deriving irmin]
+
+    let pp_kind = Irmin.Type.pp kind_t
 
     type nonrec 'a t = {
       kind : kind;
@@ -162,7 +162,7 @@ module Maker (V : Version.S) (Index : Pack_index.S) = struct
       let n = IO.read t.pack.block ~off buf in
       assert (n = K.Hash.hash_size);
       let _, h = decode_hash (Bytes.unsafe_to_string buf) 0 in
-      K.v ~metadata:off h
+      K.of_offset off h
 
     let mem_hash t h =
       Tbl.mem t.staging h || Lru.mem t.lru h || Index.mem t.pack.index h
@@ -195,7 +195,6 @@ module Maker (V : Version.S) (Index : Pack_index.S) = struct
       Fmt.pf ppf "%s%s" name mode
 
     let find_hash ~not_in_caches t h =
-      Log.debug (fun l -> l "[pack:%a] find %a" pp_io t pp_hash h);
       Stats.incr_finds ();
       match Tbl.find t.staging h with
       | v ->
@@ -209,8 +208,10 @@ module Maker (V : Version.S) (Index : Pack_index.S) = struct
               not_in_caches ())
 
     let unsafe_find ~check_integrity t k =
+      Log.debug (fun l -> l "[pack:%a] find %a" pp_io t pp_key k);
       let h = K.hash k in
       let not_in_caches () =
+        Fmt.epr "XXX NOT IN CACHE %a (%a)\n%!" pp_key k pp_kind t.kind;
         match Index.find t.pack.index h with
         | None -> None
         | Some (off, len, _) ->
@@ -260,7 +261,7 @@ module Maker (V : Version.S) (Index : Pack_index.S) = struct
         in
         let dict = Dict.index t.pack.dict in
         let off = IO.offset t.pack.block in
-        let k = K.v ~metadata:off h in
+        let k = K.of_offset off h in
         Val.encode_bin ~offset ~dict v k (IO.append t.pack.block);
         let len = Int63.to_int (IO.offset t.pack.block -- off) in
         if t.kind = `Commit then
@@ -271,14 +272,16 @@ module Maker (V : Version.S) (Index : Pack_index.S) = struct
         k
       in
       if not ensure_unique then append ()
-      else
+      else (
+        Log.debug (fun l -> l "[pack:%a] find %a" pp_io t pp_hash h);
         match find_hash t h ~not_in_caches:(fun () -> None) with
         | None -> append ()
-        | Some (k, _) -> k
+        | Some (k, _) -> k)
 
     let add t v =
       let h = Val.hash v in
       let k = unsafe_append ~ensure_unique:true ~overcommit:true t h v in
+      Fmt.epr "XXXX ADD %a\n%!" pp_key k;
       Lwt.return k
 
     let unsafe_add t h v =

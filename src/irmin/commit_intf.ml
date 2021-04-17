@@ -19,13 +19,13 @@ open! Import
 module type S = sig
   (** {1 Commit values} *)
 
-  type t
+  type t [@@deriving irmin]
   (** The type for commit values. *)
 
-  type node
+  type node [@@deriving irmin]
   (** Type for node keys. *)
 
-  type commit
+  type commit [@@deriving irmin]
   (** Type for commit keys. *)
 
   val v : info:Info.t -> node:node -> parents:commit list -> t
@@ -39,25 +39,17 @@ module type S = sig
 
   val info : t -> Info.t
   (** The commit info. *)
-
-  (** {1 Value Types} *)
-
-  val t : t Type.t
-  (** [t] is the value type for {!t}. *)
-
-  val node_t : node Type.t
-  (** [node_t] is the value type for {!hash}. *)
-
-  val commit_t : commit Type.t
-  (** [commit_t] is the value type for {!hash}. *)
 end
 
 module type Maker = sig
   module Make
       (H : Hash.S)
-      (N : Key.Abstract with type hash = H.t)
-      (C : Key.Abstract with type hash = H.t) :
-    S with type node = N.t and type commit = C.t
+      (N : Key.S with type hash = H.t)
+      (C : Key.Poly with type hash = H.t) : sig
+    type t
+
+    include S with type t := t and type node = N.t and type commit = t C.t
+  end
 end
 
 module type Store = sig
@@ -73,6 +65,8 @@ module type Store = sig
 
   (** [Val] provides functions for commit values. *)
   module Val : S with type t = value and type commit = key
+
+  module Hash : Hash.Typed with type t = hash and type value = value
 
   module Node : Node.Store with type key = Val.node
   (** [Node] is the underlying node store. *)
@@ -192,8 +186,9 @@ module type Sigs = sig
   (** [Store] creates a new commit store. *)
   module Store
       (N : Node.Store)
-      (S : Content_addressable.S with type hash = N.hash)
-      (K : Key.S with type t = S.key and type hash = S.hash)
+      (S : Content_addressable.S)
+      (H : Hash.S with type t = S.hash)
+      (K : Key.S with type t = S.key and type hash = H.t)
       (V : S with type node = N.key and type commit = S.key and type t = S.value) :
     Store
       with type 'a t = 'a N.t * 'a S.t

@@ -53,39 +53,45 @@ struct
 
     module X = struct
       module Hash = H
+      module K = CA.Key (H)
 
       module Contents = struct
-        module K = CA.Key (H) (C)
+        module K = Key.Mono (K) (C)
         module CA = CA.Make (H) (C)
         include Contents.Store (CA) (K) (C)
       end
 
       module Node = struct
         (* this is rather painful *)
-        module rec K :
-          (Key.Abstract with type t = CA.Key(H)(V).t and type hash = Hash.t) =
-          CA.Key (H) (V)
+        module rec K : (Key.Poly with type hash = Hash.t) = CA.Key (H) (V)
 
         and V :
           (Node.S
             with type contents = Contents.key
-             and type node = K.t
+             and type node = V.t K.t
              and type metadata = M.t
              and type step = P.step) =
-          N.Make (H) (Contents.Key) (K) (P) (M)
+          N.Make (Contents.Key) (K) (P) (M)
 
         module K' = CA.Key (H) (V)
         module CA = CA.Make (H) (V)
         include Node.Store (Contents) (CA) (K') (V) (M) (P)
       end
 
+      (* this is rather painful *)
       module Commit = struct
         module rec K :
-          (Key.Abstract with type t = CA.Key(H)(V).t and type hash = Hash.t) =
+          (Key.Poly with type t = CA.Key(H)(V).t and type hash = Hash.t) =
           CA.Key (H) (V)
 
         and V : (Commit.S with type node = Node.key and type commit = K.t) =
-          CT.Make (H) (Node.Key) (K)
+        struct
+          include CT.Make (H) (Node.Key) (K)
+
+          let node_t = Node.Key.t
+          let commit_t = K.t
+          let t = t node_t commit_t
+        end
 
         module K' = CA.Key (H) (V)
         module CA = CA.Make (H) (V)

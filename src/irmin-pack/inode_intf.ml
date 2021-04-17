@@ -36,7 +36,7 @@ module type S = sig
     string ->
     read t Lwt.t
 
-  module Key : S.Key with type t = key and type hash = hash
+  module Key : Key.S with type t = key and type hash = hash
 
   module Val :
     Value with type t = value and type node = key and type contents = key
@@ -138,16 +138,18 @@ module type Sigs = sig
 
   module Make_internal
       (Conf : Conf.S)
-      (K : S.Key)
+      (K : Key.S)
       (Node : Irmin.Private.Node.S with type node = K.t and type contents = K.t) :
     Internal
       with type key = K.t
        and type hash = K.hash
        and type Val.metadata = Node.metadata
        and type Val.step = Node.step
+       and type Val.node = Node.node
+       and type Val.contents = Node.contents
 
   module Make_ext
-      (K : S.Key)
+      (K : Key.S)
       (Node : Irmin.Private.Node.S with type node = K.t and type contents = K.t)
       (Inter : Internal
                  with type key = K.t
@@ -161,15 +163,17 @@ module type Sigs = sig
       S
         with type key = K.t
          and type hash = K.hash
-         and type Val.metadata = Node.metadata
-         and type Val.step = Node.step
          and type index = Pack_index.Make(K.Hash).t
          and type value = Inter.Val.t
+         and type Val.metadata = Node.metadata
+         and type Val.step = Node.step
+         and type Val.node = Node.node
+         and type Val.contents = Node.contents
   end
 
   module Make
       (_ : Conf.S)
-      (K : S.Key)
+      (K : Key.S)
       (_ : Content_addressable.Maker
              with type hash = K.hash
               and type index = Pack_index.Make(K.Hash).t)
@@ -181,6 +185,7 @@ module type Sigs = sig
          and type index = Pack_index.Make(K.Hash).t
          and type Val.metadata = Node.metadata
          and type Val.step = Node.step
+         and type Val.node = Node.node
          and type Val.contents = Node.contents
   end
 end

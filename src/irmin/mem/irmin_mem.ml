@@ -24,7 +24,7 @@ module Append_only = struct
   module Key = Irmin.Key.Make
 
   module Make (K : Irmin.Hash.S) (V : Irmin.Type.S) = struct
-    module Key = Key (K) (V)
+    module Key = Key (K)
 
     module Hashes = Map.Make (struct
       type t = K.t
@@ -32,7 +32,7 @@ module Append_only = struct
       let compare = Irmin.Type.(unstage (compare K.t))
     end)
 
-    type key = Key.t
+    type key = V.t Key.t [@@deriving irmin]
     type value = V.t
     type 'a t = { mutable t : (key * value) Hashes.t }
 
@@ -51,10 +51,10 @@ module Append_only = struct
 
     let cast t = (t :> read_write t)
     let batch t f = f (cast t)
-    let pp_key = Irmin.Type.pp Key.t
+    let pp_key = Irmin.Type.pp key_t
 
     let find_aux { t; _ } key =
-      match Key.metadata key with
+      match Key.value key with
       | Some _ as v ->
           Log.debug (fun l -> l "metadata found!");
           v
@@ -86,7 +86,7 @@ module Append_only = struct
       match Hashes.find_opt hash t.t with
       | Some (k, _) -> Lwt.return k
       | None ->
-          let key = Key.v ~metadata:value hash in
+          let key = Key.of_value value hash in
           t.t <- Hashes.add hash (key, value) t.t;
           Lwt.return key
   end

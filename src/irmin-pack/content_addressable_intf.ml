@@ -92,7 +92,7 @@ module type Maker = sig
   (** Save multiple kind of values in the same pack file. Values will be
       distinguished using [V.magic], so they have to all be different. *)
   module Make
-      (K : S.Key with type hash = hash)
+      (K : Key.S with type hash = hash)
       (V : Value with type key := K.t and type hash := hash) :
     S
       with type key = K.t

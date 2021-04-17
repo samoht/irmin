@@ -23,12 +23,14 @@ module Make (AO : Append_only.Maker) = struct
 
   module Make (H : Hash.S) (V : Type.S) = struct
     include AO.Make (H) (V)
-    module Key = Key (H) (V)
+    module Key = Key (H)
     module H = Hash.Typed (H) (V)
+
+    type key = V.t Key.t [@@deriving irmin]
 
     let hash = H.hash
     let pp_hash = Type.pp H.t
-    let pp_key = Type.pp Key.t
+    let pp_key = Type.pp key_t
     let equal_hash = Type.(unstage (equal H.t))
 
     let find t k =

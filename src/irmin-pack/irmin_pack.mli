@@ -42,20 +42,19 @@ val config :
 
 exception RO_not_allowed
 
-include Irmin_pack_intf.Sigs
-(** @inline *)
-
-module Maker (_ : Version.S) : Maker
-module V1 : Maker
-module V2 : Maker
-
-module KV (_ : Version.S) (_ : Conf.S) :
-  Irmin.KV_maker with type metadata = unit
+module Key = Key
 
 module type Maker = sig
   include S.Maker
   (** @inline *)
 end
+
+module Maker (_ : Version.S) (_ : Conf.S) : Maker
+module V1 (_ : Conf.S) : Maker
+module V2 (_ : Conf.S) : Maker
+
+module KV (_ : Version.S) (_ : Conf.S) :
+  Irmin.KV_maker with type metadata = unit
 
 module type Specifics = sig
   include S.Specifics
@@ -84,12 +83,3 @@ module Content_addressable = Content_addressable
 module Atomic_write = Atomic_write
 module IO = IO
 module Utils = Utils
-
-(** Keys *)
-
-module type Key = sig
-  include S.Key
-  (** @inline *)
-end
-
-module Key (H : Irmin.Hash.S) : Key with type hash = H.t

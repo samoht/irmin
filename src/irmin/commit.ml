@@ -24,37 +24,56 @@ module Log = (val Logs.src_log src : Logs.LOG)
 
 module Make
     (H : Hash.S)
-    (N : Key.Abstract with type hash = H.t)
-    (C : Key.Abstract with type hash = H.t) =
+    (N : Key.S with type hash = H.t)
+    (C : Key.Poly with type hash = H.t) =
 struct
-  type node = N.t
-  type commit = C.t
+  type node = N.t [@@deriving irmin]
 
-  let node_t = Type.map ~pp:N.dump H.t N.v N.hash
-  let commit_t = Type.map ~pp:C.dump H.t C.v C.hash
+  type commit = t C.t
 
-  type t = { node : node; parents : commit list; info : Info.t }
+  and t = { node : node; parents : commit list; info : Info.t }
   [@@deriving irmin]
 
   let parents t = t.parents
   let node t = t.node
   let info t = t.info
-  let compare_commit = Type.(unstage (compare commit_t))
+  let compare_hash = Type.(unstage (compare H.t))
+  let compare_commit x y = compare_hash (C.hash x) (C.hash y)
 
   let v ~info ~node ~parents =
     let parents = List.fast_sort compare_commit parents in
     { node; parents; info }
+
+  module Pre_hash = struct
+    type t = { p_node : H.t; p_parents : H.t list; p_info : Info.t }
+    [@@deriving irmin]
+
+    let v t =
+      {
+        p_node = N.hash t.node;
+        p_parents = List.map C.hash t.parents;
+        p_info = t.info;
+      }
+  end
+
+  let pre_hash =
+    let f = Type.(unstage (pre_hash Pre_hash.t)) in
+    Type.stage (fun x -> f (Pre_hash.v x))
+
+  let t = Type.like t ~pre_hash
 end
 
 module Store
     (N : Node.Store)
-    (S : Content_addressable.S with type hash = N.hash)
-    (K : Key.S with type t = S.key and type hash = S.hash)
+    (S : Content_addressable.S)
+    (H : Hash.S with type t = S.hash)
+    (K : Key.S with type t = S.key and type hash = H.t)
     (V : S with type node = N.key and type commit = S.key and type t = S.value) =
 struct
   module Node = N
   module Val = V
   module Key = K
+  module Hash = Hash.Typed (H) (V)
 
   type 'a t = 'a N.t * 'a S.t
   type key = S.key
@@ -86,13 +105,15 @@ struct
     | None -> N.add n N.Val.empty
     | Some node -> Lwt.return node
 
+  let equal_key = Type.(unstage (equal Key.t))
   let equal_opt_keys = Type.(unstage (equal (option Key.t)))
 
   let merge_commit info t ~old k1 k2 =
+    Log.debug (fun l -> l "Commit.merge %a %a" pp_key k1 pp_key k2);
     let* v1 = get t k1 in
     let* v2 = get t k2 in
-    if List.mem k1 (Val.parents v2) then Merge.ok k2
-    else if List.mem k2 (Val.parents v1) then Merge.ok k1
+    if List.exists (equal_key k1) (Val.parents v2) then Merge.ok k2
+    else if List.exists (equal_key k2) (Val.parents v1) then Merge.ok k1
     else
       (* If we get an error while looking the the lca, then we
          assume that there is no common ancestor. Maybe we want to
@@ -202,7 +223,7 @@ module History (S : Store) = struct
     type t = S.Key.t
 
     let compare = Type.(unstage (compare S.Key.t))
-    let hash k = S.Key.Hash.short_hash (S.Key.hash k)
+    let hash k = S.Hash.short_hash (S.Key.hash k)
     let equal = Type.(unstage (equal S.Key.t))
   end
 

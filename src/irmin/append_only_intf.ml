@@ -47,7 +47,7 @@ module type Maker = sig
 
   module Make (H : Hash.S) (V : Type.S) : sig
     include
-      S with type key = Key(H)(V).t and type value = V.t and type hash = H.t
+      S with type key = V.t Key(H).t and type value = V.t and type hash = H.t
 
     include Of_config with type 'a t := 'a t
     (** @inline *)
