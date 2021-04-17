@@ -139,14 +139,14 @@ module Make (P : Private.S) = struct
   module Node_ids = Hashtbl.Make (struct
     type t = P.Node.Key.t
 
-    let hash x = P.Node.Key.(Hash.short_hash (hash x))
+    let hash x = P.Node.Key.(P.Hash.short_hash (hash x))
     let equal = Type.(unstage (equal P.Node.Key.t))
   end)
 
   module Contents_ids = Hashtbl.Make (struct
     type t = P.Contents.Key.t
 
-    let hash x = P.Contents.Key.(Hash.short_hash (hash x))
+    let hash x = P.Contents.Key.(P.Hash.short_hash (hash x))
     let equal = Type.(unstage (equal P.Contents.Key.t))
   end)
 
@@ -263,19 +263,29 @@ module Make (P : Private.S) = struct
       let+ v = force t in
       get_ok "force" v
 
-    let equal_id = Type.(unstage (equal P.Contents.Key.t))
+    let equal_hash =
+      let eq = Type.(unstage (equal P.Hash.t)) in
+      fun x y -> eq (P.Contents.Key.hash x) (P.Contents.Key.hash y)
+
+    let compare_hash =
+      let cmp = Type.(unstage (compare P.Hash.t)) in
+      fun x y -> cmp (P.Contents.Key.hash x) (P.Contents.Key.hash y)
 
     let equal (x : t) (y : t) =
       x == y
       ||
       match (cached_id x, cached_id y) with
-      | Some x, Some y -> equal_id x y
+      | Some x, Some y -> equal_hash x y
       | _ -> (
           match (cached_value x, cached_value y) with
           | Some x, Some y -> equal_contents x y
-          | _ -> equal_id (id x) (id y))
+          | _ -> equal_hash (id x) (id y))
 
-    let t = Type.map ~equal:(Type.stage equal) v of_v (fun t -> t.v)
+    let compare (x : t) (y : t) = compare_hash (id x) (id y)
+
+    let t =
+      Type.map ~equal:(Type.stage equal) ~compare:(Type.stage compare) v of_v
+        (fun t -> t.v)
 
     let merge : t Merge.t =
       let f ~old x y =
@@ -610,9 +620,13 @@ module Make (P : Private.S) = struct
 
     let pp_id = Type.pp P.Node.Key.t
 
-    let equal_id =
-      let eq = Type.(unstage (equal P.Node.Key.t)) in
-      fun x y -> x == y || eq x y
+    let equal_hash =
+      let eq = Type.(unstage (equal P.Hash.t)) in
+      fun x y -> eq (P.Node.Key.hash x) (P.Node.Key.hash y)
+
+    let compare_hash =
+      let cmp = Type.(unstage (compare P.Hash.t)) in
+      fun x y -> cmp (P.Node.Key.hash x) (P.Node.Key.hash y)
 
     let contents_equal ((c1, m1) as x1) ((c2, m2) as x2) =
       x1 == x2 || (Contents.equal c1 c2 && equal_metadata m1 m2)
@@ -631,14 +645,14 @@ module Make (P : Private.S) = struct
       x == y
       ||
       match (cached_id x, cached_id y) with
-      | Some x, Some y -> equal_id x y
+      | Some x, Some y -> equal_hash x y
       | _ -> (
           match (cached_value x, cached_value y) with
           | Some x, Some y -> equal_node x y
           | _ -> (
               match (cached_map x, cached_map y) with
               | Some x, Some y -> map_equal x y
-              | _ -> equal_id (id x) (id y)))
+              | _ -> equal_hash (id x) (id y)))
 
     (* same as [equal] but do not compare in-memory maps
        recursively. *)
@@ -646,11 +660,14 @@ module Make (P : Private.S) = struct
       if x == y then True
       else
         match (cached_id x, cached_id y) with
-        | Some x, Some y -> if equal_id x y then True else False
+        | Some x, Some y -> if equal_hash x y then True else False
         | _ -> (
             match (cached_value x, cached_value y) with
             | Some x, Some y -> if equal_node x y then True else False
             | _ -> Maybe)
+
+    let compare (x : t) (y : t) =
+      match maybe_equal x y with True -> 0 | _ -> compare_hash (id x) (id y)
 
     (** Does [um] empties [v]?
 
@@ -911,7 +928,10 @@ module Make (P : Private.S) = struct
 
     let remove t step = update t step Remove
     let add t step v = update t step (Add v)
-    let t node = Type.map ~equal:(Type.stage equal) node of_v (fun t -> t.v)
+
+    let t node =
+      Type.map ~equal:(Type.stage equal) ~compare:(Type.stage compare) node of_v
+        (fun t -> t.v)
 
     let _, t =
       Type.mu2 (fun _ y ->
@@ -1310,14 +1330,14 @@ module Make (P : Private.S) = struct
       cnt.node_add <- cnt.node_add + 1;
       let+ k = P.Node.add node_t v in
       let k' = Node.id n in
-      assert (Node.equal_id k k');
+      assert (Node.equal_hash k k');
       Node.export ?clear repo n k
     in
     let add_contents c x () =
       cnt.contents_add <- cnt.contents_add + 1;
       let+ k = P.Contents.add contents_t x in
       let k' = Contents.id c in
-      assert (Contents.equal_id k k');
+      assert (Contents.equal_hash k k');
       Contents.export ?clear repo c k
     in
     let add_node_map n x () = add_node n (value_of_map n x) () in

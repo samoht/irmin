@@ -94,8 +94,6 @@ end
 module Make_helpers (S : S) = struct
   module P = S.Private
   module Graph = Irmin.Private.Node.Graph (P.Node)
-  module H_node = Irmin.Hash.Typed (P.Hash) (P.Node.Val)
-  module H_contents = Irmin.Hash.Typed (P.Hash) (P.Contents.Val)
 
   let get_contents_id = function
     | `Contents id -> id

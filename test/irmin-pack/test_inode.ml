@@ -66,14 +66,7 @@ type pred = [ `Contents of key | `Inode of key | `Node of key ]
 
 let pp_pred = Irmin.Type.pp pred_t
 
-module H_contents =
-  Irmin.Hash.Typed
-    (H)
-    (struct
-      type t = string
-
-      let t = Irmin.Type.string
-    end)
+module H_contents = Irmin.Hash.Typed (H) (Irmin.Type.Contents.String)
 
 let normal x = `Contents (K.v x, Metadata.default)
 let node x = `Node (K.v x)

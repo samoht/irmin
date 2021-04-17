@@ -111,13 +111,13 @@ module Make (S : S) = struct
   let test_nodes x () =
     let test repo =
       let g = g repo and n = n repo in
-      let k = normal (P.Contents.Key.v (H_contents.hash "foo")) in
+      let k = normal (P.Contents.Key.v (P.Contents.Hash.hash "foo")) in
       let check_hash = check P.Hash.t in
       let check_key = check P.Node.Key.t in
       let check_val = check [%typ: Graph.value option] in
       let check_list = checks [%typ: S.step * P.Node.Val.value] in
       let check_node msg v =
-        let h' = H_node.hash v in
+        let h' = P.Node.Hash.hash v in
         let+ id = with_node repo (fun n -> P.Node.add n v) in
         check_hash (msg ^ ": hash(v) = add(v)") (P.Node.Key.hash id) h'
       in
@@ -157,7 +157,7 @@ module Make (S : S) = struct
       check_node "node: x+y+z+a" u >>= fun () ->
       let u = P.Node.Val.add u "b" k in
       check_node "node: x+y+z+a+b" u >>= fun () ->
-      let h = H_node.hash u in
+      let h = P.Node.Hash.hash u in
       let* k = with_node repo (fun n -> P.Node.add n u) in
       check_hash "hash(v) = add(v)" h (P.Node.Key.hash k);
       let* w = P.Node.find n k in
@@ -473,7 +473,8 @@ module Make (S : S) = struct
       let check_hash msg bindings =
         let* node = node bindings in
         let+ tree = tree bindings in
-        check P.Node.Key.t msg node (get_node_id (S.Tree.id tree))
+        check P.Hash.t msg (P.Node.Key.hash node)
+          (P.Node.Key.hash (get_node_id (S.Tree.id tree)))
       in
       check_hash "empty" [] >>= fun () ->
       let bindings1 = [ ([ "a" ], "x"); ([ "b" ], "y") ] in
@@ -1032,7 +1033,7 @@ module Make (S : S) = struct
       Alcotest.(check int) "val-list:3" 0 (S.Tree.counters ()).node_val_list;
 
       let shallow s =
-        S.Tree.shallow repo (`Node (P.Node.Key.v (H_contents.hash s)))
+        S.Tree.shallow repo (`Node (P.Node.Key.v (P.Contents.Hash.hash s)))
       in
       (* Test caching (makesure that no tree is lying in scope) *)
       let v0 = shallow "foo-x" in
@@ -1447,26 +1448,26 @@ module Make (S : S) = struct
           | Ok v -> (
               let ls = P.Node.Val.list v in
               Alcotest.(check int) "list wide node" size (List.length ls);
-              let k = normal (P.Contents.Key.v (H_contents.hash "bar")) in
+              let k = normal (P.Contents.Key.v (P.Contents.Hash.hash "bar")) in
               let v1 = P.Node.Val.add v "x" k in
-              let h' = H_node.hash v1 in
+              let h' = P.Node.Hash.hash v1 in
               with_node repo (fun n -> P.Node.add n v1) >>= fun h ->
-              check H_node.t "wide node + x: hash(v) = add(v)"
+              check P.Node.Hash.t "wide node + x: hash(v) = add(v)"
                 (P.Node.Key.hash h) h';
               let v2 = P.Node.Val.add v "x" k in
               check P.Node.Val.t "add x" v1 v2;
               let v0 = P.Node.Val.remove v1 "x" in
               check P.Node.Val.t "remove x" v v0;
               let v3 = P.Node.Val.remove v "1" in
-              let h' = H_node.hash v3 in
+              let h' = P.Node.Hash.hash v3 in
               with_node repo (fun n -> P.Node.add n v3) >|= fun h ->
-              check H_node.t "wide node - 1 : hash(v) = add(v)"
+              check P.Node.Hash.t "wide node - 1 : hash(v) = add(v)"
                 (P.Node.Key.hash h) h';
               (match P.Node.Val.find v "499999" with
               | None -> Alcotest.fail "value 499999 not found"
               | Some x ->
                   let x' =
-                    normal (P.Contents.Key.v (H_contents.hash "499999"))
+                    normal (P.Contents.Key.v (P.Contents.Hash.hash "499999"))
                   in
                   check P.Node.Val.value_t "find 499999" x x');
               match P.Node.Val.find v "500000" with
@@ -1903,9 +1904,9 @@ module Make (S : S) = struct
 
   let test_shallow_objects x () =
     let test repo =
-      let contents s = P.Contents.Key.v (H_contents.hash s) in
-      let node s = P.Node.Key.v (H_contents.hash s) in
-      let commit s = P.Commit.Key.v (H_contents.hash s) in
+      let contents s = P.Contents.Key.v (P.Contents.Hash.hash s) in
+      let node s = P.Node.Key.v (P.Contents.Hash.hash s) in
+      let commit s = P.Commit.Key.v (P.Contents.Hash.hash s) in
       let foo_k = node "foo" in
       let bar_k = node "bar" in
       let tree_1 = S.Tree.shallow repo (`Node foo_k) in

@@ -13,11 +13,14 @@ module Make (H : Hash.S) = struct
     | None -> Fmt.pf ppf "[%a]" pp_hash t.hash
     | Some id -> Fmt.pf ppf "[%a:%a]" pp_hash t.hash pp_v id
 
-  let pre_hash =
-    let f = Type.(unstage (pre_hash H.t)) in
-    Type.stage (fun t -> f t.hash)
+  let t : type a. a Type.t -> a t Type.t =
+   fun v ->
+    let pre_hash =
+      let f = Type.(unstage (pre_hash H.t)) in
+      Type.stage (fun t -> f t.hash)
+    in
+    Type.like (t v) ~pre_hash ~pp:(pp (Type.pp v))
 
-  let t v : 'a t Type.t = Type.like (t v) ~pre_hash ~pp:(pp (Type.pp v))
   let hash t = t.hash
   let value t = t.value
   let v hash = { hash; value = None }
