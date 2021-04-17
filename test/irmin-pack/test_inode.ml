@@ -29,13 +29,14 @@ end
 
 let log_size = 1000
 
-module A = Irmin.Key.Abstract (K)
 module Path = Irmin.Path.String_list
 module Metadata = Irmin.Metadata.None
-module Node = Irmin.Private.Node.Make (A) (A) (Path) (Metadata)
-module Index = Irmin_pack.Index.Make (K.Hash)
-module Inter = Irmin_pack.Inode.Make_internal (Conf) (K) (Node)
-module Inode = Irmin_pack.Inode.Make_ext (K) (Node) (Inter) (P)
+module Node = Irmin.Private.Node.Make (H) (KS) (K) (Path) (Metadata)
+module KN = Irmin_pack.Key.Mono (K) (Node)
+module Index = Irmin_pack.Index.Make (H)
+module Private = Irmin_pack.Inode.Private (Conf) (H) (KS) (KN) (Node)
+module Inode = Irmin_pack.Inode.Of_private (Private) (H) (P)
+module Val = Private.Val
 
 module Context = struct
   type t = {
@@ -59,14 +60,14 @@ module Context = struct
     Inode.close t.store
 end
 
-type key = K.t [@@deriving irmin]
+type key = KN.t [@@deriving irmin]
 
-type pred = [ `Contents of key | `Inode of key | `Node of key ]
+type pred = [ `Contents of KS.t | `Inode of key | `Node of key ]
 [@@deriving irmin]
 
 let pp_pred = Irmin.Type.pp pred_t
 
-module H_contents = Irmin.Hash.Typed (H) (Irmin.Type.Contents.String)
+module H_contents = Irmin.Hash.Typed (H) (Irmin.Contents.String)
 
 let normal x = `Contents (K.v x, Metadata.default)
 let node x = `Node (K.v x)
@@ -122,7 +123,7 @@ module Inode_permutations_generator = struct
           let is_valid =
             indices
             |> List.mapi (fun depth i -> (depth, i))
-            |> List.for_all (fun (depth, i) -> Inter.Val.index ~depth s = i)
+            |> List.for_all (fun (depth, i) -> Val.index ~depth s = i)
           in
           if is_valid then s else aux (i + 1)
       in
@@ -203,14 +204,14 @@ module Inode_permutations_generator = struct
 end
 
 let check_node msg v t =
-  let h = Inter.Val.hash v in
+  let h = Val.hash v in
   let+ h' = Inode.batch t.Context.store (fun i -> Inode.add i v) in
   check_hash msg h (K.hash h')
 
 let check_hardcoded_hash msg h v =
   h |> Irmin.Type.of_string H.t |> function
   | Error (`Msg str) -> Alcotest.failf "hash of string failed: %s" str
-  | Ok hash -> check_hash msg hash (Inter.Val.hash v)
+  | Ok hash -> check_hash msg hash (Val.hash v)
 
 (** Test add values from an empty node. *)
 let test_add_values () =
@@ -226,8 +227,8 @@ let test_add_values () =
   Context.close t
 
 let integrity_check ?(stable = true) v =
-  Alcotest.(check bool) "check stable" (Inter.Val.stable v) stable;
-  if not (Inter.Val.integrity_check v) then
+  Alcotest.(check bool) "check stable" (Val.stable v) stable;
+  if not (Val.integrity_check v) then
     Alcotest.failf "node does not satisfy stability invariants %a"
       (Irmin.Type.pp Inode.Val.t)
       v
@@ -475,18 +476,18 @@ let test_intermediate_inode_as_root () =
 let test_concrete_inodes () =
   rm_dir root;
   let* t = Context.get_store () in
-  let pp_concrete = Irmin.Type.pp_json ~minify:false Inter.Val.Concrete.t in
-  let result_t = Irmin.Type.result Inode.Val.t Inter.Val.Concrete.error_t in
+  let pp_concrete = Irmin.Type.pp_json ~minify:false Val.Concrete.t in
+  let result_t = Irmin.Type.result Inode.Val.t Val.Concrete.error_t in
   let testable =
     Alcotest.testable
       (Irmin.Type.pp_json ~minify:false result_t)
       Irmin.Type.(unstage (equal result_t))
   in
   let check v =
-    let len = Inter.Val.length v in
+    let len = Val.length v in
     integrity_check ~stable:(len <= Conf.stable_hash) v;
-    let c = Inter.Val.to_concrete v in
-    let r = Inter.Val.of_concrete c in
+    let c = Val.to_concrete v in
+    let r = Val.of_concrete c in
     let msg = Fmt.str "%a" pp_concrete c in
     Alcotest.check testable msg (Ok v) r
   in

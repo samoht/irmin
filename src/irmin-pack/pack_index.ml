@@ -33,6 +33,8 @@ module Make (K : Irmin.Hash.S) = struct
       v
   end
 
+  module Hash = K
+
   module Val = struct
     type t = int63 * int * char [@@deriving irmin]
 

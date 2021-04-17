@@ -33,8 +33,7 @@ struct
       (H : Irmin.Hash.S) =
   struct
     module K = Key.Make (H)
-    module A = Irmin.Key.Abstract (K)
-    module Index = Pack_index.Make (K.Hash)
+    module Index = Pack_index.Make (H)
     module Pack = Content_addressable.Maker (V) (Index)
     module Dict = Pack_dict.Make (V)
 
@@ -44,6 +43,8 @@ struct
       type 'a value = { hash : H.t; magic : char; v : 'a } [@@deriving irmin]
 
       module Contents = struct
+        module K = Key.Mono (K) (C)
+
         module CA = struct
           module CA_Pack =
             Pack.Make
@@ -72,41 +73,21 @@ struct
           include Content_addressable.Closeable (CA_Pack)
         end
 
-        include Irmin.Contents.Store (CA) (K) (C)
+        include Irmin.Contents.Store (CA) (H) (K) (C)
       end
 
       module Node = struct
-        module Node = Node.Make (A) (A) (P) (M)
-        module CA = Inode.Make (Config) (K) (Pack) (Node)
-        include Irmin.Private.Node.Store (Contents) (CA) (K) (CA.Val) (M) (P)
+        module Node = Node.Make (H) (Contents.K) (K) (P) (M)
+        module K = Key.Mono (K) (Node)
+        module CA = Inode.Make (Config) (H) (Pack) (Contents.K) (K) (Node)
+
+        include
+          Irmin.Private.Node.Store (Contents) (CA) (H) (K) (CA.Val) (M) (P)
       end
 
       module Commit = struct
-        module Pre_hash = Commit.Make (A) (A)
-
-        module Commit = struct
-          type node = K.t [@@deriving irmin]
-          type commit = K.t [@@deriving irmin]
-
-          type t = { node : node; parents : commit list; info : Irmin.Info.t }
-          [@@deriving irmin]
-
-          let to_p { node; parents; info } = Pre_hash.v ~info ~parents ~node
-
-          let pre_hash =
-            let f = Irmin.Type.(unstage (pre_hash Pre_hash.t)) in
-            Irmin.Type.stage (fun x -> f (to_p x))
-
-          let t : t Irmin.Type.t = Irmin.Type.like ~pre_hash t
-          let parents t = t.parents
-          let node t = t.node
-          let info t = t.info
-          let compare_commit = Irmin.Type.(unstage (compare commit_t))
-
-          let v ~info ~node ~parents =
-            let parents = List.fast_sort compare_commit parents in
-            { node; parents; info }
-        end
+        module Commit = Commit.Make (H) (Node.Key) (K)
+        module K = Key.Mono (K) (Commit)
 
         module CA = struct
           module CA_Pack =
@@ -136,13 +117,13 @@ struct
           include Content_addressable.Closeable (CA_Pack)
         end
 
-        include Irmin.Private.Commit.Store (Node) (CA) (K) (Commit)
+        include Irmin.Private.Commit.Store (Node) (CA) (H) (K) (Commit)
       end
 
       module Branch = struct
         module Key = B
-        module Val = K
-        module AW = Atomic_write.Make (V) (Key) (Val)
+        module Val = Commit.Key
+        module AW = Atomic_write.Make (V) (H) (Key) (Val)
         include Atomic_write.Closeable (AW)
       end
 
@@ -339,6 +320,10 @@ struct
       end
     end
 
+    let contents_key = X.Contents.Key.v
+    let node_key = X.Node.Key.v
+    let commit_key = X.Commit.Key.v
+
     let integrity_check ?ppf ~auto_repair t =
       let module Checks = Checks.Index (Index) in
       let contents = X.Repo.contents_t t in
@@ -346,11 +331,13 @@ struct
       let commits = X.Repo.commit_t t |> snd in
       let check ~kind ~offset ~length h =
         (* FIXME: metadata? *)
-        let k = K.v h in
         match kind with
-        | `Contents -> X.Contents.CA.integrity_check ~offset ~length k contents
-        | `Node -> X.Node.CA.integrity_check ~offset ~length k nodes
-        | `Commit -> X.Commit.CA.integrity_check ~offset ~length k commits
+        | `Contents ->
+            X.Contents.CA.integrity_check ~offset ~length (contents_key h)
+              contents
+        | `Node -> X.Node.CA.integrity_check ~offset ~length (node_key h) nodes
+        | `Commit ->
+            X.Commit.CA.integrity_check ~offset ~length (commit_key h) commits
       in
       Checks.integrity_check ?ppf ~auto_repair ~check t.index
 

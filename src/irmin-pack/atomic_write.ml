@@ -25,7 +25,12 @@ module Table (K : Irmin.Type.S) = Hashtbl.Make (struct
   let equal = Irmin.Type.(unstage (equal K.t))
 end)
 
-module Make (Current : Version.S) (K : Irmin.Type.S) (V : Irmin.Key.S) = struct
+module Make
+    (Current : Version.S)
+    (H : Irmin.Hash.S)
+    (K : Irmin.Type.S)
+    (V : Irmin.Type.S) =
+struct
   module Tbl = Table (K)
   module W = Irmin.Private.Watch.Make (K) (V)
   module IO = IO.Unix
@@ -70,7 +75,7 @@ module Make (Current : Version.S) (K : Irmin.Type.S) (V : Irmin.Key.S) = struct
 
   let zero =
     let none = Irmin.Type.(unstage (to_bin_string (option int64))) None in
-    let buf = String.make V.Hash.hash_size '\000' ^ none in
+    let buf = String.make H.hash_size '\000' ^ none in
     match value_of_bin_string buf with Ok x -> x | Error _ -> assert false
 
   let equal_val = Irmin.Type.(unstage (equal V.t))
@@ -80,7 +85,7 @@ module Make (Current : Version.S) (K : Irmin.Type.S) (V : Irmin.Key.S) = struct
       if offset >= to_ then ()
       else
         let len = read_length32 ~off:offset t.block in
-        let buf = Bytes.create (len + V.Hash.hash_size) in
+        let buf = Bytes.create (len + H.hash_size) in
         let off = offset ++ Int63.of_int 4 in
         let n = IO.read t.block ~off buf in
         assert (n = Bytes.length buf);
@@ -95,7 +100,7 @@ module Make (Current : Version.S) (K : Irmin.Type.S) (V : Irmin.Key.S) = struct
         assert (n = String.length buf);
         if not (equal_val v zero) then Tbl.add t.cache h v;
         Tbl.add t.index h offset;
-        (aux [@tailcall]) (off ++ Int63.(of_int @@ (len + V.Hash.hash_size)))
+        (aux [@tailcall]) (off ++ Int63.(of_int @@ (len + H.hash_size)))
     in
     aux from
 

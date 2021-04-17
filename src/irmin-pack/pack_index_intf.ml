@@ -35,10 +35,11 @@ module type S = sig
   val merge : t -> unit
 
   module Stats = Index.Stats
+  module Hash : Irmin.Hash.S with type t = key
 end
 
 module type Sigs = sig
   module type S = S
 
-  module Make (K : Irmin.Hash.S) : S with type key = K.t
+  module Make (K : Irmin.Hash.S) : S with type key = K.t and module Hash = K
 end

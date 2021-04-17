@@ -593,7 +593,8 @@ module Branch = struct
     let version = `V2
   end
 
-  module Branch = Irmin_pack.Atomic_write.Make (V2) (Irmin.Branch.String) (K)
+  module Branch =
+    Irmin_pack.Atomic_write.Make (V2) (H) (Irmin.Branch.String) (KS)
 
   let pp_hash = Irmin.Type.pp Irmin.Hash.SHA1.t
 

@@ -89,17 +89,21 @@ module type Maker = sig
       (Contents : Irmin.Contents.S)
       (Path : Irmin.Path.S)
       (Branch : Irmin.Branch.S)
-      (Hash : Irmin.Hash.S) :
-    S
-      with type key = Path.t
-       and type contents = Contents.t
-       and type branch = Branch.t
-       and type hash = Hash.t
-       and type step = Path.step
-       and type metadata = Metadata.t
-       and type Key.step = Path.step
-       and type contents_id = Key.Make(Hash).t
-       and type node_id = Key.Make(Hash).t
-       and type commit_id = Key.Make(Hash).t
-       and type Private.Remote.endpoint = endpoint
+      (Hash : Irmin.Hash.S) : sig
+    type node
+    type commit
+
+    include
+      S
+        with type key = Path.t
+         and type contents = Contents.t
+         and type branch = Branch.t
+         and type hash = Hash.t
+         and type step = Path.step
+         and type metadata = Metadata.t
+         and type node := node
+         and type commit := commit
+         and type Key.step = Path.step
+         and type Private.Remote.endpoint = endpoint
+  end
 end

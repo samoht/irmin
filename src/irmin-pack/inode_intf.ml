@@ -36,11 +36,8 @@ module type S = sig
     string ->
     read t Lwt.t
 
+  module Val : Value with type t = value
   module Key : Key.S with type t = key and type hash = hash
-
-  module Val :
-    Value with type t = value and type node = key and type contents = key
-
   include S.Checkable with type 'a t := 'a t and type key := key
 
   val sync : ?on_generation_change:(unit -> unit) -> 'a t -> unit
@@ -54,12 +51,9 @@ end
 
 (** Unstable internal API agnostic about the underlying storage. Use it only to
     implement or test inodes. *)
-module type Internal = sig
+module type Private = sig
   type key
   type hash
-
-  val pp_key : key Fmt.t
-  val pp_hash : hash Fmt.t
 
   module Raw :
     Content_addressable.Value with type key = key and type hash = hash
@@ -71,12 +65,15 @@ module type Internal = sig
     int ->
     int * Raw.t
 
+  module Key : Key.S with type t = key and type hash = hash
+  module Hash : Irmin.Hash.S with type t = hash
+
   module Val : sig
-    include Value with type node = key and type contents = key
+    include Value with type node = key
 
     val of_raw : (key -> Raw.t option) -> Raw.t -> t
     val to_raw : t -> Raw.t
-    val save : add:(hash -> Raw.t -> key) -> mem:(key -> bool) -> t -> key
+    val save : add:(hash -> Raw.t -> key) -> mem:(key -> bool) -> t -> node
     val hash : t -> hash
     val stable : t -> bool
     val length : t -> int
@@ -134,58 +131,58 @@ end
 
 module type Sigs = sig
   module type S = S
-  module type Internal = Internal
+  module type Private = Private
 
-  module Make_internal
+  module Private
       (Conf : Conf.S)
-      (K : Key.S)
-      (Node : Irmin.Private.Node.S with type node = K.t and type contents = K.t) :
-    Internal
-      with type key = K.t
-       and type hash = K.hash
-       and type Val.metadata = Node.metadata
-       and type Val.step = Node.step
-       and type Val.node = Node.node
-       and type Val.contents = Node.contents
+      (H : Irmin.Hash.S)
+      (C : Key.S with type hash = H.t)
+      (N : Key.S with type hash = H.t)
+      (V : Irmin.Private.Node.S with type node = N.t and type contents = C.t) :
+    Private
+      with type key = N.t
+       and type hash = H.t
+       and module Hash = H
+       and type Val.metadata = V.metadata
+       and type Val.step = V.step
+       and type Val.node = N.t
+       and type Val.contents = C.t
 
-  module Make_ext
-      (K : Key.S)
-      (Node : Irmin.Private.Node.S with type node = K.t and type contents = K.t)
-      (Inter : Internal
-                 with type key = K.t
-                  and type hash = K.hash
-                  and type Val.metadata = Node.metadata
-                  and type Val.step = Node.step)
-      (_ : Content_addressable.Maker
-             with type hash = K.hash
-              and type index = Pack_index.Make(K.Hash).t) : sig
+  module Of_private
+      (I : Private)
+      (H : Irmin.Hash.S with type t = I.hash)
+      (Maker : Content_addressable.Maker
+                 with type hash = I.hash
+                  and type index = Pack_index.Make(H).t) : sig
     include
       S
-        with type key = K.t
-         and type hash = K.hash
-         and type index = Pack_index.Make(K.Hash).t
-         and type value = Inter.Val.t
-         and type Val.metadata = Node.metadata
-         and type Val.step = Node.step
-         and type Val.node = Node.node
-         and type Val.contents = Node.contents
+        with type key = I.key
+         and type hash = I.hash
+         and type index = Maker.index
+         and type value = I.Val.t
+         and type Val.metadata = I.Val.metadata
+         and type Val.step = I.Val.step
+         and type Val.node = I.Val.node
+         and type Val.contents = I.Val.contents
   end
 
   module Make
       (_ : Conf.S)
-      (K : Key.S)
+      (H : Irmin.Hash.S)
       (_ : Content_addressable.Maker
-             with type hash = K.hash
-              and type index = Pack_index.Make(K.Hash).t)
-      (Node : Irmin.Private.Node.S with type node = K.t and type contents = K.t) : sig
+             with type hash = H.t
+              and type index = Pack_index.Make(H).t)
+      (C : Key.S with type hash = H.t)
+      (N : Key.S with type hash = H.t)
+      (V : Irmin.Private.Node.S with type node = N.t and type contents = C.t) : sig
     include
       S
-        with type key = K.t
-         and type hash = K.hash
-         and type index = Pack_index.Make(K.Hash).t
-         and type Val.metadata = Node.metadata
-         and type Val.step = Node.step
-         and type Val.node = Node.node
-         and type Val.contents = Node.contents
+        with type key = N.t
+         and type hash = H.t
+         and type index = Pack_index.Make(H).t
+         and type Val.metadata = V.metadata
+         and type Val.step = V.step
+         and type Val.node = V.node
+         and type Val.contents = V.contents
   end
 end

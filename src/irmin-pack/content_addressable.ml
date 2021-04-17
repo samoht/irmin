@@ -69,38 +69,41 @@ module Maker (V : Version.S) (Index : Pack_index.S) = struct
       IO.close t.block;
       Dict.close t.dict)
 
+  module Tbl = Table (Index.Hash)
+
+  module Lru = Irmin.Private.Lru.Make (struct
+    include Index.Hash
+
+    let hash = short_hash
+    let equal = Irmin.Type.(unstage (equal t))
+  end)
+
+  let equal_hash = Irmin.Type.(unstage (equal Index.Hash.t))
+  let pp_hash = Irmin.Type.pp Index.Hash.t
+  let decode_hash = Irmin.Type.(unstage (decode_bin Index.Hash.t))
+  let hash_size = Index.Hash.hash_size
+
   module Make
       (K : Key.S with type hash = hash)
       (Val : Value with type key := K.t and type hash := hash) =
   struct
-    module Tbl = Table (K.Hash)
-
-    module Lru = Irmin.Private.Lru.Make (struct
-      include K.Hash
-
-      let hash = K.Hash.short_hash
-      let equal = Irmin.Type.(unstage (equal K.Hash.t))
-    end)
-
     type kind = [ `Commit | `Node | `Contents ] [@@deriving irmin]
 
     let pp_kind = Irmin.Type.pp kind_t
-
-    type nonrec 'a t = {
-      kind : kind;
-      pack : 'a t;
-      lru : (K.t * Val.t) Lru.t;
-      staging : (K.t * Val.t) Tbl.t;
-      mutable open_instances : int;
-      readonly : bool;
-    }
 
     type key = K.t
     type hash = K.hash
     type value = Val.t
     type index = Index.t
 
-    let equal_hash = Irmin.Type.(unstage (equal K.Hash.t))
+    type nonrec 'a t = {
+      kind : kind;
+      pack : 'a t;
+      lru : (key * value) Lru.t;
+      staging : (key * value) Tbl.t;
+      mutable open_instances : int;
+      readonly : bool;
+    }
 
     let unsafe_clear ?keep_generation t =
       clear ?keep_generation t.pack;
@@ -154,13 +157,11 @@ module Maker (V : Version.S) (Index : Pack_index.S) = struct
       Lwt.return t
 
     let pp_key = Irmin.Type.pp K.t
-    let pp_hash = Irmin.Type.pp K.Hash.t
-    let decode_hash = Irmin.Type.(unstage (decode_bin K.Hash.t))
 
     let io_read_and_decode_hash ~off t =
-      let buf = Bytes.create K.Hash.hash_size in
+      let buf = Bytes.create hash_size in
       let n = IO.read t.pack.block ~off buf in
-      assert (n = K.Hash.hash_size);
+      assert (n = hash_size);
       let _, h = decode_hash (Bytes.unsafe_to_string buf) 0 in
       K.of_offset off h
 

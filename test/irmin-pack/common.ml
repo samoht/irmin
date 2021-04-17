@@ -46,7 +46,8 @@ end
 module H = Irmin.Hash.SHA1
 module I = Index
 module K = Irmin_pack.Key.Make (H)
-module Index = Irmin_pack.Index.Make (K.Hash)
+module KS = Irmin_pack.Key.Mono (K) (Irmin.Contents.String)
+module Index = Irmin_pack.Index.Make (H)
 
 module S = struct
   include Irmin.Contents.String
@@ -58,7 +59,7 @@ module S = struct
   let hash = H.hash
   let encode_pair = Irmin.Type.(unstage (encode_bin (pair H.t t)))
   let decode_pair = Irmin.Type.(unstage (decode_bin (pair H.t t)))
-  let encode_bin ~dict:_ ~offset:_ x k = encode_pair (K.hash k, x)
+  let encode_bin ~dict:_ ~offset:_ x k = encode_pair (KS.hash k, x)
 
   let decode_bin ~dict:_ ~key:_ x off =
     let _, (_, v) = decode_pair x off in
@@ -70,8 +71,8 @@ module V2 = struct
 end
 
 module P = Irmin_pack.Content_addressable.Maker (V2) (Index)
-module Pack = P.Make (K) (S)
-module Branch = Irmin_pack.Atomic_write.Make (V2) (Irmin.Branch.String) (K)
+module Pack = P.Make (KS) (S)
+module Branch = Irmin_pack.Atomic_write.Make (V2) (H) (Irmin.Branch.String) (KS)
 
 module Make_context (Config : sig
   val root : string

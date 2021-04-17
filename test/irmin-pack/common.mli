@@ -25,7 +25,8 @@ end
 module Dict : Irmin_pack.Dict.S
 module H = Irmin.Hash.SHA1
 module I = Index
-module K : Irmin_pack.Key.S with type hash = H.t
+module K : Irmin_pack.Key.Poly with type hash = H.t
+module KS : Irmin_pack.Key.S with type hash = H.t and type t = string K.t
 
 module Filename : sig
   include module type of Filename
@@ -51,7 +52,7 @@ module Index : Irmin_pack.Index.S with type key = H.t
 
 module Pack :
   Irmin_pack.Content_addressable.S
-    with type key = K.t
+    with type key = string K.t
      and type hash = K.hash
      and type value = string
      and type index = Index.t
@@ -59,7 +60,7 @@ module Pack :
 module P :
   Irmin_pack.Content_addressable.Maker
     with type hash = H.t
-     and type index = Irmin_pack.Index.Make(K.Hash).t
+     and type index = Irmin_pack.Index.Make(H).t
 
 (** Helper constructors for fresh pre-initialised dictionaries and packs *)
 module Make_context (Config : sig
