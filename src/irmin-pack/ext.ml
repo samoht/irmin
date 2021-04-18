@@ -63,7 +63,7 @@ struct
                   let hash = K.hash k in
                   encode_value { magic; hash; v }
 
-                let decode_bin ~dict:_ ~key:_ s off =
+                let decode_bin ~dict:_ ~hash:_ s off =
                   let _, t = decode_value s off in
                   t.v
 
@@ -99,16 +99,19 @@ struct
 
                 let hash = H.hash
                 let value = value_t Commit.t
+                let pp_val = Irmin.Type.pp Commit.t
                 let magic = 'C'
                 let encode_value = Irmin.Type.(unstage (encode_bin value))
                 let decode_value = Irmin.Type.(unstage (decode_bin value))
 
                 let encode_bin ~dict:_ ~offset:_ v k =
                   let hash = K.hash k in
+                  Fmt.epr "XXX encode_bin %a\n%!" pp_val v;
                   encode_value { magic; hash; v }
 
-                let decode_bin ~dict:_ ~key:_ s off =
+                let decode_bin ~dict:_ ~hash:_ s off =
                   let _, v = decode_value s off in
+                  Fmt.epr "XXX decode_bin %a\n%!" pp_val v.v;
                   v.v
 
                 let magic _ = magic
@@ -237,15 +240,14 @@ struct
                   | 'B' -> decode_contents buf 0 |> fst
                   | 'C' -> decode_commit buf 0 |> fst
                   | 'N' | 'I' ->
-                      let key off =
+                      let hash off =
                         let buf =
                           IO.read_buffer ~chunk:Hash.hash_size ~off pack
                         in
-                        let hash = decode_key buf 0 |> snd in
-                        K.of_offset off hash
+                        decode_key buf 0 |> snd
                       in
                       let dict = Dict.find dict in
-                      Node.CA.decode_bin ~key ~dict buf 0
+                      Node.CA.decode_bin ~hash ~dict buf 0
                   | _ -> failwith "unexpected magic char"
                 in
                 Some len

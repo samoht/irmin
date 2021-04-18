@@ -198,13 +198,13 @@ module Make (P : Private.S) = struct
       let info = { id; value } in
       { v; info }
 
+    let pp_id = Type.pp id_t
+
     let export ?clear:(c = true) repo t k =
-      let id = t.info.id in
+      Fmt.epr "XXX Tree.Contents.export %a\n%!" pp_id k;
       if c then clear t;
-      match (t.v, id) with
-      | Id (_, k), _ -> t.v <- Id (repo, k)
-      | Value _, None -> t.v <- Id (repo, k)
-      | Value _, Some k -> t.v <- Id (repo, k)
+      t.info.id <- Some k;
+      t.v <- Id (repo, k)
 
     let of_value c = of_v (Value c)
     let of_id repo k = of_v (Id (repo, k))
@@ -318,6 +318,8 @@ module Make (P : Private.S) = struct
   module Node = struct
     type value = P.Node.Val.t
     type id = P.Node.Key.t [@@deriving irmin]
+
+    let pp_id = Type.pp id_t
 
     type elt = [ `Node of t | `Contents of Contents.t * Metadata.t ]
 
@@ -445,6 +447,7 @@ module Make (P : Private.S) = struct
 
     (* export t to the given repo and clear the cache *)
     let export ?clear:(c = true) repo t k =
+      Fmt.epr "XXX Tree.Node.export %a\n%!" pp_id k;
       let id = t.info.id in
       if c then clear t;
       match t.v with
@@ -572,6 +575,7 @@ module Make (P : Private.S) = struct
       | Some v -> Lwt.return_ok v
       | None -> (
           cnt.node_find <- cnt.node_find + 1;
+          Fmt.epr "XXX Tree.Node.value_of_id\n%!";
           P.Node.find (P.Repo.node_t repo) k >|= function
           | None -> Error (`Dangling_hash (P.Node.Key.hash k))
           | Some v as some_v ->
@@ -1324,9 +1328,11 @@ module Make (P : Private.S) = struct
   let value_of_map t map = Node.value_of_map t map (fun x -> x)
 
   let export ?clear repo contents_t node_t n =
+    Fmt.epr "XXX EXPORT START\n%!";
     let seen_nodes = Node_ids.create 127 in
     let seen_contents = Contents_ids.create 127 in
     let add_node n v () =
+      Fmt.epr "XXX EXPORT ADD NODE\n%!";
       cnt.node_add <- cnt.node_add + 1;
       let+ k = P.Node.add node_t v in
       let k' = Node.id n in
@@ -1334,6 +1340,7 @@ module Make (P : Private.S) = struct
       Node.export ?clear repo n k
     in
     let add_contents c x () =
+      Fmt.epr "XXX EXPORT ADD CONTENTS\n%!";
       cnt.contents_add <- cnt.contents_add + 1;
       let+ k = P.Contents.add contents_t x in
       let k' = Contents.id c in

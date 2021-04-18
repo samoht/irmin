@@ -76,51 +76,54 @@ struct
     type tree = { depth : int; length : int; entries : ptr list }
     type v = Values of (step * value) list | Tree of tree
 
-    let key_t = Irmin.Type.map H.t N.v N.hash
-
-    let ptr_t : ptr Irmin.Type.t =
+    let ptr_t key_t : ptr Irmin.Type.t =
       let open Irmin.Type in
       record "Bin.ptr" (fun index key -> { index; key })
       |+ field "index" int (fun t -> t.index)
       |+ field "key" key_t (fun (t : ptr) -> t.key)
       |> sealr
 
-    let tree_t : tree Irmin.Type.t =
+    let tree_t key_t : tree Irmin.Type.t =
       let open Irmin.Type in
       record "Bin.tree" (fun depth length entries -> { depth; length; entries })
       |+ field "depth" int (fun t -> t.depth)
       |+ field "length" int (fun t -> t.length)
-      |+ field "entries" (list ptr_t) (fun t -> t.entries)
+      |+ field "entries" (list (ptr_t key_t)) (fun t -> t.entries)
       |> sealr
 
-    let v_t : v Irmin.Type.t =
+    let v_t key_t : v Irmin.Type.t =
       let open Irmin.Type in
       variant "Bin.v" (fun values tree -> function
         | Values l -> values l | Tree i -> tree i)
       |~ case1 "Values" (list (pair step_t value_t)) (fun t -> Values t)
-      |~ case1 "Tree" tree_t (fun t -> Tree t)
+      |~ case1 "Tree" (tree_t key_t) (fun t -> Tree t)
       |> sealv
 
-    module V =
-      Irmin.Hash.Typed
-        (H)
-        (struct
-          type t = v
+    module Pre_hash = struct
+      let key_t = Irmin.Type.map H.t N.v N.hash
+      let v = Irmin.Type.(unstage (pre_hash (v_t key_t)))
 
-          let t = v_t
-        end)
+      module V =
+        Irmin.Hash.Typed
+          (H)
+          (struct
+            type t = v
+
+            let t = v_t key_t
+          end)
+    end
+
+    let hash_v = Pre_hash.V.hash
 
     type t = { hash : H.t Lazy.t; stable : bool; v : v }
 
-    let pre_hash_v = Irmin.Type.(unstage (pre_hash v_t))
-
     let t : t Irmin.Type.t =
       let open Irmin.Type in
-      let pre_hash = stage (fun x -> pre_hash_v x.v) in
+      let pre_hash = stage (fun x -> Pre_hash.v x.v) in
       record "Bin.t" (fun hash stable v -> { hash = lazy hash; stable; v })
       |+ field "hash" H.t (fun t -> Lazy.force t.hash)
       |+ field "stable" bool (fun t -> t.stable)
-      |+ field "v" v_t (fun t -> t.v)
+      |+ field "v" (v_t key_t) (fun t -> t.v)
       |> sealr
       |> like ~pre_hash
 
@@ -641,7 +644,7 @@ struct
         if List.length s <> List.length ps then raise (Duplicated_pointers t);
         if s <> ps then raise (Unsorted_pointers t)
       in
-      let hash v = Bin.V.hash (to_bin_v Total v) in
+      let hash v = Bin.hash_v (to_bin_v Total v) in
       let rec aux depth t =
         match t with
         | Concrete.Value l ->
@@ -775,7 +778,7 @@ struct
         let v = Values vs in
         let key =
           lazy
-            (let hash = Bin.V.hash (to_bin_v layout v) in
+            (let hash = Bin.hash_v (to_bin_v layout v) in
              (* FIXME: metadata *)
              N.v hash)
         in
@@ -785,7 +788,7 @@ struct
       let v = Tree is in
       let key =
         lazy
-          (let hash = Bin.V.hash (to_bin_v layout v) in
+          (let hash = Bin.hash_v (to_bin_v layout v) in
            (* FIXME: metadata *)
            N.v hash)
       in
@@ -1000,39 +1003,37 @@ struct
     let step_of_bin = Irmin.Type.(unstage (of_bin_string T.step_t))
     let encode_compress = Irmin.Type.(unstage (encode_bin Compress.t))
     let decode_compress = Irmin.Type.(unstage (decode_bin Compress.t))
+    let pp = Irmin.Type.pp t
 
     let encode_bin ~dict ~offset (t : t) (k : key) =
+      Fmt.epr "XXX Inode.encode_bin %a %a\n%!" pp_key k pp t;
       let step s : Compress.name =
         let str = step_to_bin s in
         if String.length str <= 3 then Direct s
         else match dict str with Some i -> Indirect i | None -> Direct s
       in
-      let address k : Compress.address =
-        (* FIXME: look at the metadata first *)
-        match offset k with
-        | None -> Compress.Direct (N.hash k)
-        | Some off -> Compress.Indirect off
+      let address key_offset h : Compress.address =
+        (* look at the key offset first *)
+        match key_offset with
+        | Some o -> Compress.Indirect o
+        | None -> (
+            match offset h with
+            | None -> Compress.Direct h
+            | Some off -> Compress.Indirect off)
       in
       let ptr : Bin.ptr -> Compress.ptr =
        fun n ->
-        let hash = address n.key in
+        let hash = address (N.offset n.key) (N.hash n.key) in
         { index = n.index; hash }
       in
       let value : T.step * T.value -> Compress.value = function
         | s, `Contents (c, m) ->
             let s = step s in
-            (* FIXME: that's cheating - maybe we want to compress
-               values differently? for instance by inlining them? *)
-            let h = C.hash c in
-            let offset = C.offset c in
-            let c =
-              match offset with None -> N.v h | Some o -> N.of_offset o h
-            in
-            let v = address c in
+            let v = address (C.offset c) (C.hash c) in
             Compress.Contents (s, v, m)
         | s, `Node n ->
             let s = step s in
-            let v = address n in
+            let v = address (N.offset n) (N.hash n) in
             Compress.Node (s, v)
       in
       (* List.map is fine here as the number of entries is small *)
@@ -1047,7 +1048,7 @@ struct
 
     exception Exit of [ `Msg of string ]
 
-    let decode_bin_with_offset ~dict ~key t off : int * t =
+    let decode_bin_with_offset ~dict ~hash t off : int * t =
       let off, i = decode_compress t off in
       let step : Compress.name -> T.step = function
         | Direct n -> n
@@ -1063,18 +1064,13 @@ struct
         | Direct n ->
             (* No offset information. *)
             N.v n
-        | Indirect off -> key off
+        | Indirect off -> N.of_lookup off (fun () -> hash off)
       in
       let contents : Compress.address -> contents = function
         | Direct n ->
             (* No offset information. *)
             C.v n
-        | Indirect off -> (
-            (* FIXME: cheating!! *)
-            let k = key off in
-            let h = N.hash k in
-            let offset = N.offset k in
-            match offset with None -> C.v h | Some o -> C.of_offset o h)
+        | Indirect off -> C.of_lookup off (fun () -> hash off)
       in
       let ptr : Compress.ptr -> Bin.ptr =
        fun n ->
@@ -1100,11 +1096,12 @@ struct
       let t = Bin.v ~stable:i.stable ~hash:(lazy i.hash) (t i.v) in
       (off, t)
 
-    let decode_bin ~dict ~key t off =
-      decode_bin_with_offset ~dict ~key t off |> snd
+    let decode_bin ~dict ~hash t off =
+      decode_bin_with_offset ~dict ~hash t off |> snd
   end
 
-  let decode_raw ~dict ~key t off = Raw.decode_bin_with_offset ~dict ~key t off
+  let decode_raw ~dict ~hash t off =
+    Raw.decode_bin_with_offset ~dict ~hash t off
 
   module Val = struct
     include T
@@ -1163,7 +1160,7 @@ struct
       in
       map t { f }
 
-    let pre_hash_binv = Irmin.Type.(unstage (pre_hash Bin.v_t))
+    let pre_hash_binv = Bin.Pre_hash.v
     let pre_hash_node = Irmin.Type.(unstage (pre_hash Node.t))
 
     let t : t Irmin.Type.t =
@@ -1246,6 +1243,7 @@ struct
   type index = Pack.index
 
   let pp_hash = Irmin.Type.pp Hash.t
+  let pp_val = Irmin.Type.pp Val.t
   let mem t k = Pack.mem t k
 
   let find t k =
@@ -1259,12 +1257,17 @@ struct
   (* FIXME: better name *)
   let save t v =
     let add k v =
+      Fmt.epr "XXX Inode.save/add %a %a\n%!" pp_hash k (Irmin.Type.pp I.Raw.t) v;
       Pack.unsafe_append ~ensure_unique:true ~overcommit:false t k v
     in
     Val.save ~add ~mem:(Pack.unsafe_mem t) v
 
   let hash v = Val.hash v
-  let add t v = Lwt.return (save t v)
+
+  let add t v =
+    Fmt.epr "XXX Inode.add %a\n%!" pp_val v;
+    Lwt.return (save t v)
+
   let equal_hash = Irmin.Type.(unstage (equal Hash.t))
 
   let check_hash expected got =
@@ -1284,7 +1287,7 @@ struct
   let sync = Pack.sync
   let clear = Pack.clear
   let clear_caches = Pack.clear_caches
-  let decode_bin ~dict ~key buff off = I.decode_raw ~dict ~key buff off |> fst
+  let decode_bin ~dict ~hash buff off = I.decode_raw ~dict ~hash buff off |> fst
 
   let integrity_check_inodes t k =
     find t k >|= function

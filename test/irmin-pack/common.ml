@@ -61,7 +61,7 @@ module S = struct
   let decode_pair = Irmin.Type.(unstage (decode_bin (pair H.t t)))
   let encode_bin ~dict:_ ~offset:_ x k = encode_pair (KS.hash k, x)
 
-  let decode_bin ~dict:_ ~key:_ x off =
+  let decode_bin ~dict:_ ~hash:_ x off =
     let _, (_, v) = decode_pair x off in
     v
 end

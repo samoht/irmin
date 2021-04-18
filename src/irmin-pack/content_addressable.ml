@@ -89,7 +89,11 @@ module Maker (V : Version.S) (Index : Pack_index.S) = struct
   struct
     type kind = [ `Commit | `Node | `Contents ] [@@deriving irmin]
 
-    let pp_kind = Irmin.Type.pp kind_t
+    (* FIXME: fix pp_variants *)
+    let pp_kind ppf = function
+      | `Commit -> Fmt.string ppf "commit"
+      | `Node -> Fmt.string ppf "node"
+      | `Contents -> Fmt.string ppf "contents"
 
     type key = K.t
     type hash = K.hash
@@ -157,20 +161,29 @@ module Maker (V : Version.S) (Index : Pack_index.S) = struct
       Lwt.return t
 
     let pp_key = Irmin.Type.pp K.t
+    let pp_val = Irmin.Type.pp Val.t
+
+    let pp_io ppf t =
+      let name = Filename.basename (Filename.dirname (IO.name t.pack.block)) in
+      let mode = if t.readonly then ":RO" else "" in
+      Fmt.pf ppf "%s%s:%a" name mode pp_kind t.kind
 
     let io_read_and_decode_hash ~off t =
       let buf = Bytes.create hash_size in
       let n = IO.read t.pack.block ~off buf in
       assert (n = hash_size);
       let _, h = decode_hash (Bytes.unsafe_to_string buf) 0 in
-      K.of_offset off h
+      h
 
     let mem_hash t h =
       Tbl.mem t.staging h || Lru.mem t.lru h || Index.mem t.pack.index h
 
     let unsafe_mem t k =
-      Log.debug (fun l -> l "[pack] mem %a" pp_key k);
-      mem_hash t (K.hash k)
+      match t.kind with
+      | `Contents | `Node -> false
+      | `Commit ->
+          Log.debug (fun l -> l "[%a] mem %a" pp_io t pp_key k);
+          mem_hash t (K.hash k)
 
     let mem t k = Lwt.return (unsafe_mem t k)
 
@@ -186,14 +199,9 @@ module Maker (V : Version.S) (Index : Pack_index.S) = struct
       let buf = Bytes.create len in
       let n = IO.read t.pack.block ~off buf in
       if n <> len then raise Invalid_read;
-      let key off = io_read_and_decode_hash ~off t in
+      let hash off = io_read_and_decode_hash ~off t in
       let dict = Dict.find t.pack.dict in
-      Val.decode_bin ~key ~dict (Bytes.unsafe_to_string buf) 0
-
-    let pp_io ppf t =
-      let name = Filename.basename (Filename.dirname (IO.name t.pack.block)) in
-      let mode = if t.readonly then ":RO" else "" in
-      Fmt.pf ppf "%s%s" name mode
+      Val.decode_bin ~hash ~dict (Bytes.unsafe_to_string buf) 0
 
     let find_hash ~not_in_caches t h =
       Stats.incr_finds ();
@@ -208,11 +216,26 @@ module Maker (V : Version.S) (Index : Pack_index.S) = struct
               Stats.incr_cache_misses ();
               not_in_caches ())
 
+    (* FIXME: super experimental *)
+    let buf_offset = Bytes.create (100 * 1024)
+
+    let find_offset t off =
+      Log.debug (fun l -> l "[%a] find_offset %a" pp_io t Int63.pp off);
+      if (not (IO.readonly t.pack.block)) && off > IO.offset t.pack.block then
+        raise Invalid_read;
+      let buf = buf_offset in
+      let _ = IO.read t.pack.block ~off buf in
+      let hash off = io_read_and_decode_hash ~off t in
+      let dict = Dict.find t.pack.dict in
+      let v = Val.decode_bin ~hash ~dict (Bytes.unsafe_to_string buf) 0 in
+      Fmt.epr "XXX decode:%a\n%!" pp_val v;
+      v
+
     let unsafe_find ~check_integrity t k =
-      Log.debug (fun l -> l "[pack:%a] find %a" pp_io t pp_key k);
+      Log.debug (fun l -> l "[%a] find %a" pp_io t pp_key k);
       let h = K.hash k in
       let not_in_caches () =
-        Fmt.epr "XXX NOT IN CACHE %a (%a)\n%!" pp_key k pp_kind t.kind;
+        (* Fmt.epr "XXX NOT IN CACHE %a (%a)\n%!" pp_key k pp_kind t.kind; *)
         match Index.find t.pack.index h with
         | None -> None
         | Some (off, len, _) ->
@@ -226,7 +249,9 @@ module Maker (V : Version.S) (Index : Pack_index.S) = struct
             Lru.add t.lru h (k, v);
             Some (k, v)
       in
-      find_hash ~not_in_caches t h |> Option.map snd
+      match K.offset k with
+      | Some o -> Some (find_offset t o)
+      | None -> find_hash ~not_in_caches t h |> Option.map snd
 
     let find t k = Lwt.return (unsafe_find ~check_integrity:true t k)
     let cast t = (t :> read_write t)
@@ -250,9 +275,8 @@ module Maker (V : Version.S) (Index : Pack_index.S) = struct
 
     let unsafe_append ~ensure_unique ~overcommit t h v =
       let append () =
-        Log.debug (fun l -> l "[pack] append %a" pp_hash h);
-        let offset k =
-          match Index.find t.pack.index (K.hash k) with
+        let offset h =
+          match Index.find t.pack.index h with
           | None ->
               Stats.incr_appended_hashes ();
               None
@@ -263,6 +287,7 @@ module Maker (V : Version.S) (Index : Pack_index.S) = struct
         let dict = Dict.index t.pack.dict in
         let off = IO.offset t.pack.block in
         let k = K.of_offset off h in
+        Log.debug (fun l -> l "[%a] append %a" pp_io t pp_key k);
         Val.encode_bin ~offset ~dict v k (IO.append t.pack.block);
         let len = Int63.to_int (IO.offset t.pack.block -- off) in
         if t.kind = `Commit then
@@ -273,16 +298,19 @@ module Maker (V : Version.S) (Index : Pack_index.S) = struct
         k
       in
       if not ensure_unique then append ()
-      else (
-        Log.debug (fun l -> l "[pack:%a] find %a" pp_io t pp_hash h);
-        match find_hash t h ~not_in_caches:(fun () -> None) with
-        | None -> append ()
-        | Some (k, _) -> k)
+      else
+        match t.kind with
+        | `Contents | `Node -> append ()
+        | `Commit -> (
+            Log.debug (fun l -> l "[%a] find %a" pp_io t pp_hash h);
+            match find_hash t h ~not_in_caches:(fun () -> None) with
+            | None -> append ()
+            | Some (k, _) -> k)
 
     let add t v =
       let h = Val.hash v in
       let k = unsafe_append ~ensure_unique:true ~overcommit:true t h v in
-      Fmt.epr "XXXX ADD %a\n%!" pp_key k;
+      (* Fmt.epr "XXXX ADD %a\n%!" pp_key k; *)
       Lwt.return k
 
     let unsafe_add t h v =
@@ -292,7 +320,7 @@ module Maker (V : Version.S) (Index : Pack_index.S) = struct
     let unsafe_close t =
       t.open_instances <- t.open_instances - 1;
       if t.open_instances = 0 then (
-        Log.debug (fun l -> l "[pack] close %s" (IO.name t.pack.block));
+        Log.debug (fun l -> l "[%a] close %s" pp_io t (IO.name t.pack.block));
         Tbl.clear t.staging;
         Lru.clear t.lru;
         close t.pack)
@@ -318,7 +346,7 @@ module Maker (V : Version.S) (Index : Pack_index.S) = struct
       let former_generation = IO.generation t.pack.block in
       let h = IO.force_headers t.pack.block in
       if former_generation <> h.generation then (
-        Log.debug (fun l -> l "[pack] generation changed, refill buffers");
+        Log.debug (fun l -> l "[%a] generation changed, refill buffers" pp_io t);
         clear_caches t;
         on_generation_change ();
         IO.close t.pack.block;

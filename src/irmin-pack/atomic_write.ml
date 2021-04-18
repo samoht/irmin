@@ -75,7 +75,8 @@ struct
 
   let zero =
     let none = Irmin.Type.(unstage (to_bin_string (option int64))) None in
-    let buf = String.make H.hash_size '\000' ^ none in
+    (* FIXME: fragile: need to matcg Key.Make.s *)
+    let buf = String.make H.hash_size '\000' ^ "\000" ^ none in
     match value_of_bin_string buf with Ok x -> x | Error _ -> assert false
 
   let equal_val = Irmin.Type.(unstage (equal V.t))

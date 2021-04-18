@@ -44,7 +44,7 @@ module type S = sig
   val clear_caches : 'a t -> unit
 
   val decode_bin :
-    dict:(int -> string option) -> key:(int63 -> key) -> string -> int -> int
+    dict:(int -> string option) -> hash:(int63 -> hash) -> string -> int -> int
 
   val integrity_check_inodes : [ `Read ] t -> key -> (unit, string) result Lwt.t
 end
@@ -60,7 +60,7 @@ module type Private = sig
 
   val decode_raw :
     dict:(int -> string option) ->
-    key:(int63 -> key) ->
+    hash:(int63 -> hash) ->
     string ->
     int ->
     int * Raw.t

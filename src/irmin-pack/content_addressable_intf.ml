@@ -27,14 +27,14 @@ module type Value = sig
 
   val encode_bin :
     dict:(string -> int option) ->
-    offset:(key -> int63 option) ->
+    offset:(hash -> int63 option) ->
     t ->
     key ->
     (string -> unit) ->
     unit
 
   val decode_bin :
-    dict:(int -> string option) -> key:(int63 -> key) -> string -> int -> t
+    dict:(int -> string option) -> hash:(int63 -> hash) -> string -> int -> t
 end
 
 module type S = sig

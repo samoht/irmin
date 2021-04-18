@@ -152,10 +152,10 @@ struct
   end
 
   let pre_hash =
-    let pp = Type.pp t in
     let f = Type.(unstage (pre_hash Pre_hash.t)) in
     Type.stage (fun x ->
-        Fmt.epr "XXX PRE_HASH %a\n%!" pp x;
+        (* let pp = Type.pp t in
+            Fmt.epr "XXX PRE_HASH %a\n%!" pp x; *)
         let t =
           List.rev_map (fun (_, e) -> Pre_hash.to_entry e) (StepMap.bindings x)
         in
