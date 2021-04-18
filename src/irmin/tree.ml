@@ -475,6 +475,8 @@ module Make (P : Private.S) = struct
           v
       | _, v -> v
 
+    let id t = match t.v with Id (_, k) -> Some k | _ -> None
+
     module H = Hash.Typed (P.Hash) (P.Node.Val)
 
     let rec hash : type a. t -> (hash -> a) -> a =
@@ -520,18 +522,24 @@ module Make (P : Private.S) = struct
               | `Contents (c, m) ->
                   let id =
                     match Contents.id c with
+                    | Some id -> id
                     | None ->
                         (* FIXME: metadata *)
+                        Fmt.epr "XXX Contents.Key.v\n%!";
                         P.Contents.Key.v (Contents.hash c)
-                    | Some id -> id
                   in
                   let v = `Contents (id, m) in
                   (aux [@tailcall]) ((step, v) :: acc) rest
-              | `Node n ->
-                  hash n (fun h ->
-                      (* FIXME: metadata *)
-                      let id = P.Node.Key.v h in
-                      aux ((step, `Node id) :: acc) rest))
+              | `Node n -> (
+                  let return id = aux ((step, `Node id) :: acc) rest in
+                  match id n with
+                  | Some id -> return id
+                  | None ->
+                      hash n (fun h ->
+                          (* FIXME: metadata *)
+                          Fmt.epr "XXX Node.Key.v\n%!";
+                          let id = P.Node.Key.v h in
+                          return id)))
         in
         aux [] alist
 
@@ -568,7 +576,6 @@ module Make (P : Private.S) = struct
       aux v updates
 
     let hash k = hash k (fun x -> x)
-    let id t = match t.v with Id (_, k) -> Some k | _ -> None
 
     let value_of_id t repo k =
       match t.info.value with
