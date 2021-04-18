@@ -938,21 +938,21 @@ struct
         | Values _ ->
             (* FIXME: use the offset to check if [add] is needed. *)
             let hash = N.hash (Lazy.force t.key) in
-            let _ = add hash (to_bin layout t) in
-            ()
+            add hash (to_bin layout t)
         | Tree n ->
             iter_entries
               (fun t ->
                 let id = Lazy.force t.key in
-                if mem id then () else aux ~depth:(depth + 1) t)
+                if mem id then ()
+                else
+                  let _ = aux ~depth:(depth + 1) t in
+                  ())
               n.entries;
             (* FIXME: use the offset to check if [add] is needed. *)
             let hash = N.hash (Lazy.force t.key) in
-            let _ = add hash (to_bin layout t) in
-            ()
+            add hash (to_bin layout t)
       in
-      aux ~depth:0 t;
-      Lazy.force t.key
+      aux ~depth:0 t
 
     let check_stable layout t =
       let target_of_ptr = Ptr.target layout in
@@ -1245,6 +1245,7 @@ struct
   let pp_hash = Irmin.Type.pp Hash.t
   let pp_val = Irmin.Type.pp Val.t
   let mem t k = Pack.mem t k
+  let index t k = Pack.index t k
 
   let find t k =
     Pack.find t k >|= function
@@ -1256,9 +1257,9 @@ struct
 
   (* FIXME: better name *)
   let save t v =
-    let add k v =
-      Fmt.epr "XXX Inode.save/add %a %a\n%!" pp_hash k (Irmin.Type.pp I.Raw.t) v;
-      Pack.unsafe_append ~ensure_unique:true ~overcommit:false t k v
+    let add h v =
+      Fmt.epr "XXX Inode.save/add %a %a\n%!" pp_hash h (Irmin.Type.pp I.Raw.t) v;
+      Pack.unsafe_append ~ensure_unique:true ~overcommit:false t h v
     in
     Val.save ~add ~mem:(Pack.unsafe_mem t) v
 

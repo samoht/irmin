@@ -68,6 +68,10 @@ module Check_closed (CA : Maker) = struct
       check_not_closed t;
       S.mem t.t k
 
+    let index t h =
+      check_not_closed t;
+      S.index t.t h
+
     let find t k =
       check_not_closed t;
       S.find t.t k

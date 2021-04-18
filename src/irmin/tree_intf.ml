@@ -77,7 +77,7 @@ module type S = sig
     type t
     (** The type of lazy tree contents. *)
 
-    val id : t -> id
+    val id : t -> id option
     (** [id t] is the ID of the {!contents} value returned when [t] is {!force}d
         successfully. *)
 
@@ -325,7 +325,8 @@ module type Sigs = sig
     val equal : t -> t -> bool
     val node_t : node Type.t
     val tree_t : t Type.t
-    val id : t -> kinded_id
+    val id : t -> kinded_id option
+    val hash : t -> hash
     val of_private_node : P.Repo.t -> P.Node.value -> node
     val to_private_node : node -> P.Node.value or_error Lwt.t
   end

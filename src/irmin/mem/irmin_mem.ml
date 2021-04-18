@@ -52,6 +52,7 @@ module Append_only = struct
     let cast t = (t :> read_write t)
     let batch t f = f (cast t)
     let pp_key = Irmin.Type.pp key_t
+    let pp_hash = Irmin.Type.pp K.t
 
     let find_aux { t; _ } key =
       match Key.value key with
@@ -65,6 +66,10 @@ module Append_only = struct
               Log.debug (fun l -> l "metadata set!");
               Key.set key v;
               Some v)
+
+    let index { t; _ } h =
+      Log.debug (fun f -> f "index %a" pp_hash h);
+      Hashes.find_opt h t |> Option.map fst |> Lwt.return
 
     let find t key =
       Log.debug (fun f -> f "find %a" pp_key key);

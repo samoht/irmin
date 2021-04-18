@@ -66,12 +66,6 @@ module Make (P : Private.S) = struct
 
     let of_id r k = import r k
     let shallow r h = import_no_check r h
-
-    let hash : t -> hash =
-     fun tr ->
-      match id tr with
-      | `Node h -> P.Node.Key.hash h
-      | `Contents (h, _) -> P.Contents.Key.hash h
   end
 
   let save_contents b c = P.Contents.add b c
@@ -835,8 +829,9 @@ module Make (P : Private.S) = struct
     | None -> None
     | Some tree -> (
         match Tree.id tree with
-        | `Contents (id, _) -> Some (`Contents id)
-        | `Node id -> Some (`Node id))
+        | Some (`Contents (id, _)) -> Some (`Contents id)
+        | Some (`Node id) -> Some (`Node id)
+        | None -> None)
 
   let hash t k =
     find_tree t k >|= function

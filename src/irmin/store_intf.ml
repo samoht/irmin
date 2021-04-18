@@ -370,8 +370,10 @@ module type S = sig
         reference (either {!contents} or {!node}). In the [contents] case, the
         hash is paired with corresponding {!metadata}. *)
 
-    val id : tree -> kinded_id
+    val id : tree -> kinded_id option
     (** [id r c] it [c]'s ID. *)
+
+    val hash : tree -> hash
 
     val of_id : Repo.t -> kinded_id -> tree option Lwt.t
     (** [of_id r h] is the the tree object in [r] having [h] as key, or [None]

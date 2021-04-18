@@ -473,8 +473,7 @@ module Make (S : S) = struct
       let check_hash msg bindings =
         let* node = node bindings in
         let+ tree = tree bindings in
-        check P.Hash.t msg (P.Node.Key.hash node)
-          (P.Node.Key.hash (get_node_id (S.Tree.id tree)))
+        check P.Hash.t msg (P.Node.Key.hash node) (S.Tree.hash tree)
       in
       check_hash "empty" [] >>= fun () ->
       let bindings1 = [ ([ "a" ], "x"); ([ "b" ], "y") ] in
@@ -1437,9 +1436,9 @@ module Make (S : S) = struct
       S.Tree.remove c [ "foo"; "499999" ] >>= fun c1 ->
       S.Tree.add c0 [] "499999" >>= fun c2 ->
       S.Tree.add_tree c1 [ "foo"; "499999" ] c2 >>= fun c' ->
-      let h' = S.Tree.id c' in
-      let h = S.Tree.id c in
-      check S.Tree.kinded_id_t "same tree" h h';
+      let h' = S.Tree.hash c' in
+      let h = S.Tree.hash c in
+      check S.Hash.t "same tree" h h';
       S.Tree.get_tree c [ "foo" ] >>= fun c1 ->
       (match S.Tree.destruct c1 with
       | `Contents _ -> Alcotest.fail "got `Contents, expected `Node"
@@ -1919,7 +1918,7 @@ module Make (S : S) = struct
           ]
       in
       let tree_3 = S.Tree.of_node (S.of_private_node repo node_3) in
-      let id_3 = get_node_id (S.Tree.id tree_3) in
+      let id_3 = get_node_id (Option.get (S.Tree.id tree_3)) in
       let info () = info "shallow" in
       let* t = S.master repo in
       S.set_tree_exn t [ "1" ] tree_1 ~info >>= fun () ->

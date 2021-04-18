@@ -30,6 +30,8 @@ module type S = sig
   type hash
   (** The type for keys hashes. *)
 
+  val index : [> read ] t -> hash -> key option Lwt.t
+
   val add : [> write ] t -> value -> key Lwt.t
   (** Write the contents of a value to the store. It's the responsibility of the
       content-addressable store to generate a consistent key. *)

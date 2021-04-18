@@ -203,18 +203,30 @@ module Maker (V : Version.S) (Index : Pack_index.S) = struct
       let dict = Dict.find t.pack.dict in
       Val.decode_bin ~hash ~dict (Bytes.unsafe_to_string buf) 0
 
-    let find_hash ~not_in_caches t h =
+    let find_hash ~not_in_caches t h f =
       Stats.incr_finds ();
       match Tbl.find t.staging h with
       | v ->
           Lru.add t.lru h v;
-          Some v
+          Some (f v)
       | exception Not_found -> (
           match Lru.find t.lru h with
-          | v -> Some v
+          | v -> Some (f v)
           | exception Not_found ->
               Stats.incr_cache_misses ();
               not_in_caches ())
+
+    let index t h =
+      match t.kind with
+      | `Node | `Contents -> Lwt.return_none
+      | `Commit ->
+          let not_in_caches () =
+            (* Fmt.epr "XXX NOT IN CACHE %a (%a)\n%!" pp_key k pp_kind t.kind; *)
+            match Index.find t.pack.index h with
+            | None -> None
+            | Some (off, _, _) -> Some (K.of_offset off h)
+          in
+          find_hash ~not_in_caches t h fst |> Lwt.return
 
     (* FIXME: super experimental *)
     let buf_offset = Bytes.create (100 * 1024)
@@ -247,11 +259,11 @@ module Maker (V : Version.S) (Index : Pack_index.S) = struct
                  Fmt.failwith "corrupted value: got %a, expecting %a." pp_hash
                    got pp_key expected);
             Lru.add t.lru h (k, v);
-            Some (k, v)
+            Some v
       in
       match K.offset k with
       | Some o -> Some (find_offset t o)
-      | None -> find_hash ~not_in_caches t h |> Option.map snd
+      | None -> find_hash ~not_in_caches t h snd
 
     let find t k = Lwt.return (unsafe_find ~check_integrity:true t k)
     let cast t = (t :> read_write t)
@@ -303,9 +315,9 @@ module Maker (V : Version.S) (Index : Pack_index.S) = struct
         | `Contents | `Node -> append ()
         | `Commit -> (
             Log.debug (fun l -> l "[%a] find %a" pp_io t pp_hash h);
-            match find_hash t h ~not_in_caches:(fun () -> None) with
+            match find_hash t h ~not_in_caches:(fun () -> None) fst with
             | None -> append ()
-            | Some (k, _) -> k)
+            | Some k -> k)
 
     let add t v =
       let h = Val.hash v in
@@ -380,6 +392,10 @@ module Closeable (S : S) = struct
   let mem t k =
     check_not_closed t;
     S.mem t.t k
+
+  let index t k =
+    check_not_closed t;
+    S.index t.t k
 
   let find t k =
     check_not_closed t;

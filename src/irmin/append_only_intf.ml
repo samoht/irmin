@@ -29,6 +29,8 @@ module type S = sig
   type hash
   (** The type for key hashes. *)
 
+  val index : [> read ] t -> hash -> key option Lwt.t
+
   val add : [> write ] t -> hash -> value -> key Lwt.t
   (** Write the contents of a value to the store. *)
 

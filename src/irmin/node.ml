@@ -186,6 +186,7 @@ struct
   type hash = S.hash
 
   let mem (_, t) = S.mem t
+  let index (_, t) = S.index t
   let find (_, t) = S.find t
   let clear (_, t) = S.clear t
   let add (_, t) = S.add t
