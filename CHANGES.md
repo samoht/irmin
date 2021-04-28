@@ -1,3 +1,13 @@
+## 2.5.2 (2021-04-28)
+
+- **irmin-pack**
+  - Revert a patch introduced in 2.3.0 which was calling `Index.try_merge`
+    hint index's merge to happen after every commit. However, `Index.try_merge`
+    happens to be buggy and stacks merges which is causing the node to
+    block to wait for any existing merge to complete.
+    We will revisit that scheduling feature in future once we fix
+    `Index.try_merge` (#1409, @CraigFe)
+
 ## 2.5.1 (2021-02-19)
 
 - **irmin-git**
