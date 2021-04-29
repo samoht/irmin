@@ -1,19 +1,31 @@
-val default_results_dir : string
-val prepare_results_dir : string -> unit
+(*
+ * Copyright (c) 2018-2021 Tarides <contact@tarides.com>
+ *
+ * Permission to use, copy, modify, and distribute this software for any
+ * purpose with or without fee is hereby granted, provided that the above
+ * copyright notice and this permission notice appear in all copies.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES
+ * WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF
+ * MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR
+ * ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
+ * WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN
+ * ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
+ * OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
+ *)
+
+val default_artefacts_dir : string
+val prepare_artefacts_dir : string -> unit
 val reporter : ?prefix:string -> unit -> Logs.reporter
+val setup_log : Fmt.style_renderer option -> Logs.level option -> unit
 val reset_stats : unit -> unit
 val with_timer : (unit -> 'a Lwt.t) -> (float * 'a) Lwt.t
 
 val with_progress_bar :
-  message:string ->
-  n:int ->
-  unit:string ->
-  sampling_interval:int ->
-  ((int64 -> unit) -> 'a) ->
-  'a
+  message:string -> n:int -> unit:string -> ((int64 -> unit) -> 'a) -> 'a
 
 val info : unit -> Irmin.Info.t
-val random_blob : unit -> string
+val random_blob : unit -> bytes
 
 module Conf : sig
   val entries : int
@@ -27,7 +39,7 @@ module FSHelper : sig
 end
 
 module Generate_trees
-    (Store : Irmin.S with type contents = string and type key = string list) : sig
+    (Store : Irmin.S with type contents = bytes and type key = string list) : sig
   val add_chain_trees : int -> int -> Store.tree -> Store.tree Lwt.t
   (** [add_chain_trees depth nb tree] adds [nb] random contents to [tree],
       depthwise. *)

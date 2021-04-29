@@ -1,3 +1,19 @@
+(*
+ * Copyright (c) 2018-2021 Tarides <contact@tarides.com>
+ *
+ * Permission to use, copy, modify, and distribute this software for any
+ * purpose with or without fee is hereby granted, provided that the above
+ * copyright notice and this permission notice appear in all copies.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES
+ * WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF
+ * MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR
+ * ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
+ * WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN
+ * ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
+ * OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
+ *)
+
 open! Import
 open Bench_common
 
@@ -18,8 +34,18 @@ type config = {
 
 module Hash = Irmin.Hash.SHA1
 
+module Contents = struct
+  type t = bytes
+
+  let ty = Irmin.Type.(pair (bytes_of `Int64) unit)
+  let pre_hash_ty = Irmin.Type.(unstage (pre_hash ty))
+  let pre_hash_v1 x = pre_hash_ty (x, ())
+  let t = Irmin.Type.(like bytes ~pre_hash:(stage @@ fun x -> pre_hash_v1 x))
+  let merge = Irmin.Merge.(idempotent (Irmin.Type.option t))
+end
+
 module Store =
-  Irmin_pack_layered.Make (Conf) (Irmin.Metadata.None) (Irmin.Contents.String)
+  Irmin_pack_layered.Make (Conf) (Irmin.Metadata.None) (Contents)
     (Irmin.Path.String_list)
     (Irmin.Branch.String)
     (Hash)
@@ -29,8 +55,7 @@ let configure_store root merge_throttle freeze_throttle =
     Irmin_pack.config ~readonly:false ~fresh:true ~freeze_throttle
       ~merge_throttle root
   in
-  Irmin_pack_layered.config ~conf ~with_lower:false ~blocking_copy_size:1000
-    ~copy_in_upper:true ()
+  Irmin_pack_layered.config ~conf ~with_lower:false ~blocking_copy_size:1000 ()
 
 let init config =
   FSHelper.rm_dir config.root;
@@ -62,6 +87,11 @@ let print_commit_stats config c i time =
     Logs.app (fun l ->
         l "Commit %a %d in cycle completed in %f; objects created: %d"
           Store.Commit.pp_hash c i time num_objects)
+
+let get_maxrss () =
+  let usage = Rusage.(get Self) in
+  let ( / ) = Int64.div in
+  Int64.to_int (usage.maxrss / 1024L / 1024L)
 
 let print_stats () = Logs.app (fun l -> l "%t" Irmin_layers.Stats.pp_latest)
 
@@ -109,7 +139,8 @@ let run_cycles config repo head json =
             freeze ~min_upper:[ min ] ~max:[ max ] config repo)
       in
       if config.show_stats then
-        Logs.app (fun l -> l "call to freeze completed in %f" time);
+        Logs.app (fun l ->
+            l "call to freeze completed in %f, maxrss = %d" time (get_maxrss ()));
       run_one_cycle max (i + 1)
   in
   run_one_cycle head 0
@@ -122,7 +153,8 @@ let rw config =
 
 let close config repo =
   let+ t, () = with_timer (fun () -> Store.Repo.close repo) in
-  if config.show_stats then Logs.app (fun l -> l "close %f" t)
+  if config.show_stats then
+    Logs.app (fun l -> l "close %f, maxrss = %d" t (get_maxrss ()))
 
 let run config json =
   let* repo = rw config in
@@ -130,7 +162,7 @@ let run config json =
   let* _ = run_cycles config repo c json in
   close config repo >|= fun () ->
   if config.show_stats then (
-    Fmt.epr "After freeze thread finished : ";
+    Logs.app (fun l -> l "After freeze thread finished : ");
     FSHelper.print_size_layers config.root)
 
 type result = {
@@ -146,6 +178,7 @@ let get_json_str total_time time_per_commit commits_per_sec =
     `Assoc
       [
         ( "results",
+          (* Pipeline format expects a list of results.*)
           `List
             (List.map
                (fun result ->
@@ -175,8 +208,9 @@ let main () ncommits ncycles depth clear no_freeze show_stats json
     }
   in
   if not json then
-    Format.eprintf "@[<v 2>Running benchmarks in %s:@,@,%a@,@]@." __FILE__
-      (Repr.pp_dump config_t) config;
+    Logs.app (fun l ->
+        l "@[<v 2>Running benchmarks in %s:@,@,%a@,@]@." __FILE__
+          (Repr.pp_dump config_t) config);
   init config;
   let d, _ = Lwt_main.run (with_timer (fun () -> run config json)) in
   let all_commits = ncommits * (ncycles + 5) in
@@ -243,12 +277,6 @@ let freeze_throttle =
     Arg.info ~doc:(Arg.doc_alts_enum freeze_throttle) [ "freeze-throttle" ]
   in
   Arg.(value @@ opt (Arg.enum freeze_throttle) `Block_writes doc)
-
-let setup_log style_renderer level =
-  Fmt_tty.setup_std_outputs ?style_renderer ();
-  Logs.set_level level;
-  Logs.set_reporter (reporter ());
-  ()
 
 let setup_log =
   Term.(const setup_log $ Fmt_cli.style_renderer () $ Logs_cli.level ())
