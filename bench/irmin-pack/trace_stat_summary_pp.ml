@@ -381,9 +381,10 @@ let matrix_of_floor (where_is_better, scalar_type, floor_name, names_and_curves)
   let only_one_summary = List.length names_and_curves = 1 in
   let _, curves = List.split names_and_curves in
   let pp_real = Utils.create_pp_real (List.concat curves) in
+  let pp_seconds = Utils.create_pp_seconds (List.concat curves) in
   let curve0 = List.hd curves in
   let box_of_scalar row_idx col_idx (v0, v) =
-    let pct = v /. v0 *. 100. in
+    let ratio = v /. v0 in
     let show_percent =
       if only_one_summary then
         (* Percents are only needed for comparisons between summaries. *)
@@ -396,7 +397,7 @@ let matrix_of_floor (where_is_better, scalar_type, floor_name, names_and_curves)
         (* If none of the scalars can be qualified as "better", no need for
            percents. *)
         `Shadow
-      else if Float.is_finite pct = false then
+      else if Float.is_finite ratio = false then
         (* Nan and infinite percents are ugly. *)
         `Shadow
       else if row_idx = 0 then
@@ -405,20 +406,20 @@ let matrix_of_floor (where_is_better, scalar_type, floor_name, names_and_curves)
         `Shadow
       else `Yes
     in
-    let pp_seconds ppf f =
-      if Float.is_nan f then Format.fprintf ppf "n/a"
-      else Mtime.Span.pp_float_s ppf f
-    in
+    (* let pp_seconds ppf f =
+     *   if Float.is_nan f then Format.fprintf ppf "n/a"
+     *   else Mtime.Span.pp_float_s ppf f
+     * in *)
 
     (match (scalar_type, show_percent) with
-    | `R, `Yes -> Fmt.str "%a %4.0f%%" pp_real v pct
-    | `R, `Shadow -> Fmt.str "%a      " pp_real v
+    | `R, `Yes -> Fmt.str "%a %a" pp_real v Utils.pp_percent ratio
+    | `R, `Shadow -> Fmt.str "%a     " pp_real v
     | `R, `No -> Fmt.str "%a" pp_real v
-    | `S, `Yes -> Fmt.str "%a %4.0f%%" pp_seconds v pct
-    | `S, `Shadow -> Fmt.str "%a      " pp_seconds v
+    | `S, `Yes -> Fmt.str "%a %a" pp_seconds v Utils.pp_percent ratio
+    | `S, `Shadow -> Fmt.str "%a     " pp_seconds v
     | `S, `No -> Fmt.str "%a" pp_seconds v
-    | `P, `Yes -> Fmt.str "%.0f%%  %4.0f%%" (v *. 100.) pct
-    | `P, `Shadow -> Fmt.str "%.0f%%      " (v *. 100.)
+    | `P, `Yes -> Fmt.str "%.0f%%  %a" (v *. 100.) Utils.pp_percent ratio
+    | `P, `Shadow -> Fmt.str "%.0f%%     " (v *. 100.)
     | `P, `No -> Fmt.str "%.0f%%" (v *. 100.))
     |> Pb.text
     |> Pb.align ~h:`Right ~v:`Top

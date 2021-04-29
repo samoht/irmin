@@ -50,11 +50,11 @@
     TODO: Document / clean pp
 
     - (change the "Where is better" scheme)
-    - Print section spacers (rework types to do so)
-    - (do I separate concerns more between summaries, I should?)
-    - color comma ? or color units?
+    - Spacers when 1 summary: 1 empty line between sections
+    - Spacers when 2+ summaries: move stat name at the beginning of the floors.
+      repeat blocks played count at the beginning of each section
 
-    TODO: A create_pp_seconds with examples. YES!
+    - (do I separate concerns more between summaries, I should?)
 
     # *)
 

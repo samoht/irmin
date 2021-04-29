@@ -31,6 +31,13 @@ let snap_to_integer ~significant_digits v =
       assert (significant_digits' > 0.);
       if significant_digits' >= significant_digits then v' else v
 
+let pp_six_digits_with_spacer ppf v =
+  let s = Printf.sprintf "%.6f" v in
+  let len = String.length s in
+  let a = String.sub s 0 (len - 3) in
+  let b = String.sub s (len - 3) 3 in
+  Format.fprintf ppf "%s_%s" a b
+
 let create_pp_real ?(significant_digits = 7) examples =
   let examples = List.map (snap_to_integer ~significant_digits) examples in
   let all_integer =
@@ -41,12 +48,12 @@ let create_pp_real ?(significant_digits = 7) examples =
   let absmax =
     List.fold_left
       (fun acc v ->
-        if Float.is_nan acc then v
-        else if Float.is_nan v then acc
+        if not @@ Float.is_finite acc then v
+        else if not @@ Float.is_finite v then acc
         else Float.abs v |> max acc)
       Float.neg_infinity examples
   in
-  let non_nan_pp =
+  let finite_pp =
     if absmax /. 1e12 >= 10. then fun ppf v ->
       Format.fprintf ppf "%.3f T" (v /. 1e12)
     else if absmax /. 1e9 >= 10. then fun ppf v ->
@@ -58,20 +65,50 @@ let create_pp_real ?(significant_digits = 7) examples =
     else if all_integer then fun ppf v ->
       Format.fprintf ppf "%#d" (Float.round v |> int_of_float)
     else if absmax /. 1. >= 10. then fun ppf v -> Format.fprintf ppf "%.3f" v
-    else if absmax /. 1e-3 >= 10. then fun ppf v ->
-      let s = Printf.sprintf "%.6f" v in
-      let len = String.length s in
-      let a = String.sub s 0 (len - 3) in
-      let b = String.sub s (len - 3) 3 in
-      Format.fprintf ppf "%s_%s" a b
-    else if absmax /. 1e-6 >= 10. then fun ppf v ->
-      Format.fprintf ppf "%.3f \xc2\xb5" (v /. 1e-6)
+    else if absmax /. 1e-3 >= 10. then pp_six_digits_with_spacer
     else fun ppf v -> Format.fprintf ppf "%.3e" v
   in
   fun ppf v ->
     if Float.is_nan v then Format.fprintf ppf "n/a"
     else if Float.is_infinite v then Format.fprintf ppf "%f" v
-    else non_nan_pp ppf v
+    else finite_pp ppf v
+
+let create_pp_seconds examples =
+  let absmax =
+    List.fold_left
+      (fun acc v ->
+        if not @@ Float.is_finite acc then v
+        else if not @@ Float.is_finite v then acc
+        else Float.abs v |> max acc)
+      Float.neg_infinity examples
+  in
+  let finite_pp =
+    if absmax >= 60. then fun ppf v -> Mtime.Span.pp_float_s ppf v
+    else if absmax < 100. *. 1e-12 then fun ppf v -> Format.fprintf ppf "%.3e s" v
+    else if absmax < 100. *. 1e-9 then fun ppf v ->
+      Format.fprintf ppf "%.3f ns" (v *. 1e9)
+    else if absmax < 100. *. 1e-6 then fun ppf v ->
+      Format.fprintf ppf "%.3f \xc2\xb5s" (v *. 1e6)
+    else if absmax < 100. *. 1e-3 then fun ppf v ->
+      Format.fprintf ppf "%.3f ms" (v *. 1e3)
+    else fun ppf v -> Format.fprintf ppf "%.3f  s" v
+  in
+  fun ppf v ->
+    if Float.is_nan v then Format.fprintf ppf "n/a"
+    else if Float.is_infinite v then Format.fprintf ppf "%f" v
+    else finite_pp ppf v
+
+let pp_percent ppf v =
+  if not @@ Float.is_finite v then Format.fprintf ppf "%4f" v
+  else if v = 0. then Format.fprintf ppf "  0%%"
+  else if v < 10. /. 100. then Format.fprintf ppf "%3.1f%%" (v *. 100.)
+  else if v < 1000. /. 100. then Format.fprintf ppf "%3.0f%%" (v *. 100.)
+  else if v < 1000. then Format.fprintf ppf "%3.0fx" v
+  else if v < 9.5e9 then (
+    let long_repr = Printf.sprintf "%.0e" v in
+    assert (String.length long_repr = 5);
+    Format.fprintf ppf "%ce%cx" long_repr.[0] long_repr.[4])
+  else Format.fprintf ppf "++++"
 
 module Exponential_moving_average = struct
   type t = {

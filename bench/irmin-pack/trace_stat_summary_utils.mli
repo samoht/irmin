@@ -16,6 +16,17 @@ val create_pp_real :
 
     [significant_digits] is used to snap certain numbers to the nearest integer. *)
 
+val create_pp_seconds : float list -> Format.formatter -> float -> unit
+
+val pp_percent : Format.formatter -> float -> unit
+(** Pretty prints a percent in a way that always takes 4 chars.
+
+    Examples: [0.] is ["  0%"], [0.00001] is ["0.0%"], [0.003] is ["0.3%"],
+    [0.15] is [" 15%"] [9.0] is [900%], [700.] is [700x], [410_000.0] is
+    ["4e6x"] and [1e100] is ["++++"].
+
+    Negative inputs are undefined. *)
+
 (** Functional Exponential Moving Average (EMA). *)
 module Exponential_moving_average : sig
   type t
