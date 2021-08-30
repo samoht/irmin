@@ -302,6 +302,7 @@ module Make (P : Private.S) = struct
       mutable map : map option;
       mutable hash : hash option;
       mutable findv_cache : map option;
+      mutable in_repo : [ `True of repo | `Maybe ];
     }
 
     and v =
@@ -373,7 +374,7 @@ module Make (P : Private.S) = struct
         | Value _ -> (None, None, None)
       in
       let findv_cache = None in
-      let info = { hash; map; value; findv_cache } in
+      let info = { hash; map; value; findv_cache; in_repo = `Maybe } in
       { v; info }
 
     let rec clear_elt ~max_depth depth (_, v) =
@@ -424,6 +425,7 @@ module Make (P : Private.S) = struct
     let export ?clear:(c = true) repo t k =
       let hash = t.info.hash in
       if c then clear t;
+      t.info.in_repo <- `True repo;
       match t.v with
       | Hash (_, k) -> t.v <- Hash (repo, k)
       | Value { value; updates = None; _ } when P.Node.Val.is_empty value -> ()
@@ -548,6 +550,7 @@ module Make (P : Private.S) = struct
           | None -> Error (`Dangling_hash k)
           | Some v as some_v ->
               t.info.value <- some_v;
+              t.info.in_repo <- `True repo;
               Ok v)
 
     let to_value t =
@@ -1268,7 +1271,6 @@ module Make (P : Private.S) = struct
   let value_of_map t map = Node.value_of_map t map (fun x -> x)
 
   let export ?clear repo contents_t node_t n =
-    let seen = Hashes.create 127 in
     let add_node n v () =
       cnt.node_add <- cnt.node_add + 1;
       let+ k = P.Node.add node_t v in
@@ -1287,40 +1289,34 @@ module Make (P : Private.S) = struct
     let todo = Stack.create () in
     let rec add_to_todo : type a. _ -> (unit -> a Lwt.t) -> a Lwt.t =
      fun n k ->
-      let h = Node.hash n in
-      if Hashes.mem seen h then k ()
-      else (
-        Hashes.add seen h ();
-        match n.Node.v with
-        | Node.Hash _ ->
-            Node.export ?clear repo n h;
-            k ()
-        | Node.Value { value; updates = None; _ } ->
-            Stack.push (add_node n value) todo;
-            k ()
-        | Map _ | Value { updates = Some _; _ } -> (
-            cnt.node_mem <- cnt.node_mem + 1;
-            P.Node.mem node_t h >>= function
-            | true ->
-                Node.export ?clear repo n h;
-                k ()
-            | false -> (
-                match n.v with
-                | Hash _ | Value { updates = None; _ } ->
-                    (* might happen if the node has already been added
-                       (while the thread was block on P.Node.mem *)
-                    k ()
-                | Map children ->
-                    let l = StepMap.bindings children |> List.map snd in
-                    add_steps_to_todo l n k
-                | Value { updates = Some children; _ } ->
-                    let l =
-                      StepMap.bindings children
-                      |> List.filter_map (function
-                           | _, Node.Remove -> None
-                           | _, Node.Add v -> Some v)
-                    in
-                    add_steps_to_todo l n k)))
+      match n.Node.v with
+      | Node.Hash (_, h) ->
+          Node.export ?clear repo n h;
+          k ()
+      | Node.Value { value; updates = None; _ } -> (
+          match n.Node.info.in_repo with
+          | `True r when repo == r -> k ()
+          | `True _ | `Maybe ->
+              Stack.push (add_node n value) todo;
+              k ())
+      | Map _ | Value { updates = Some _; _ } -> (
+          cnt.node_mem <- cnt.node_mem + 1;
+          match n.v with
+          | Hash _ | Value { updates = None; _ } ->
+              (* might happen if the node has already been added
+                 (while the thread was block on P.Node.mem *)
+              k ()
+          | Map children ->
+              let l = StepMap.bindings children |> List.map snd in
+              add_steps_to_todo l n k
+          | Value { updates = Some children; _ } ->
+              let l =
+                StepMap.bindings children
+                |> List.filter_map (function
+                     | _, Node.Remove -> None
+                     | _, Node.Add v -> Some v)
+              in
+              add_steps_to_todo l n k)
     and add_steps_to_todo : type a. _ -> _ -> (unit -> a Lwt.t) -> a Lwt.t =
      fun l n k ->
       (* 1. convert partial values to total values *)
@@ -1349,13 +1345,9 @@ module Make (P : Private.S) = struct
       (* 2. push the contents job on the stack. *)
       List.iter
         (fun (c, _) ->
-          let h = Contents.hash c in
-          if Hashes.mem seen h then ()
-          else (
-            Hashes.add seen h ();
-            match c.Contents.v with
-            | Contents.Hash _ -> ()
-            | Contents.Value x -> Stack.push (add_contents c x) todo))
+          match c.Contents.v with
+          | Contents.Hash _ -> ()
+          | Contents.Value x -> Stack.push (add_contents c x) todo)
         !contents;
 
       (* 3. push the children jobs on the stack. *)
