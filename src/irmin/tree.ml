@@ -307,7 +307,7 @@ module Make (P : Private.S) = struct
     and v =
       | Map of map
       | Hash of repo * hash
-      | Value of repo * value * updatemap option
+      | Value of { repo : repo; value : value; updates : updatemap option }
 
     and t = { mutable v : v; mutable info : info }
     (** [t.v] has 3 possible states:
@@ -355,7 +355,7 @@ module Make (P : Private.S) = struct
       variant "Node.node" (fun map hash value -> function
         | Map m -> map m
         | Hash (_, y) -> hash y
-        | Value (_, v, m) -> value (v, m))
+        | Value { value = v; updates = m; _ } -> value (v, m))
       |~ case1 "map" m (fun m -> Map m)
       |~ case1 "hash" P.Hash.t (fun _ -> assert false)
       |~ case1 "value" (pair P.Node.Val.t (option um)) (fun _ -> assert false)
@@ -369,7 +369,7 @@ module Make (P : Private.S) = struct
         match v with
         | Map m -> (None, Some m, None)
         | Hash (_, k) -> (Some k, None, None)
-        | Value (_, v, None) -> (None, None, Some v)
+        | Value { value; updates = None; _ } -> (None, None, Some value)
         | Value _ -> (None, None, None)
       in
       let findv_cache = None in
@@ -387,7 +387,7 @@ module Make (P : Private.S) = struct
     and clear_info ~max_depth ?v depth i =
       let added =
         match v with
-        | Some (Value (_, _, Some um)) ->
+        | Some (Value { updates = Some um; _ }) ->
             StepMap.bindings um
             |> List.filter_map (function
                  | _, Remove -> None
@@ -426,7 +426,7 @@ module Make (P : Private.S) = struct
       if c then clear t;
       match t.v with
       | Hash (_, k) -> t.v <- Hash (repo, k)
-      | Value (_, v, None) when P.Node.Val.is_empty v -> ()
+      | Value { value; updates = None; _ } when P.Node.Val.is_empty value -> ()
       | Map m when StepMap.is_empty m -> ()
       | _ -> (
           match hash with
@@ -435,7 +435,7 @@ module Make (P : Private.S) = struct
 
     let of_map m = of_v (Map m)
     let of_hash repo k = of_v (Hash (repo, k))
-    let of_value ?updates repo v = of_v (Value (repo, v, updates))
+    let of_value ?updates repo value = of_v (Value { repo; value; updates })
 
     (* Use a stable represetation for empty trees. *)
     let empty = of_map StepMap.empty
@@ -469,8 +469,8 @@ module Make (P : Private.S) = struct
 
     let cached_value t =
       match (t.v, t.info.value) with
-      | Value (_, v, None), None ->
-          let v = Some v in
+      | Value { value; updates = None; _ }, None ->
+          let v = Some value in
           t.info.value <- v;
           v
       | _, v -> v
@@ -491,8 +491,9 @@ module Make (P : Private.S) = struct
           | None -> (
               match t.v with
               | Hash (_, h) -> k h
-              | Value (_, v, None) -> a_of_value v
-              | Value (_, v, Some um) -> value_of_updates t v um a_of_value
+              | Value { value; updates = None; _ } -> a_of_value value
+              | Value { value; updates = Some um; _ } ->
+                  value_of_updates t value um a_of_value
               | Map m -> value_of_map t m a_of_value))
 
     and value_of_map : type r. t -> map -> (value, r) cont =
@@ -554,8 +555,9 @@ module Make (P : Private.S) = struct
       | Some v -> ok v
       | None -> (
           match t.v with
-          | Value (_, v, None) -> ok v
-          | Value (_, v, Some um) -> value_of_updates t v um ok
+          | Value { value; updates = None; _ } -> ok value
+          | Value { value; updates = Some um; _ } ->
+              value_of_updates t value um ok
           | Map m -> value_of_map t m ok
           | Hash (repo, h) -> value_of_hash t repo h)
 
@@ -583,7 +585,8 @@ module Make (P : Private.S) = struct
           in
           match t.v with
           | Map m -> Lwt.return (Ok m)
-          | Value (repo, v, m) -> Lwt.return (Ok (of_value repo v m))
+          | Value { repo; value; updates } ->
+              Lwt.return (Ok (of_value repo value updates))
           | Hash (repo, k) -> (
               value_of_hash t repo k >|= function
               | Error _ as e -> e
@@ -669,10 +672,11 @@ module Make (P : Private.S) = struct
             | Some v -> P.Node.Val.is_empty v
             | None -> (
                 match t.v with
-                | Value (_, v, Some um) -> is_empty_after_updates v um
+                | Value { value; updates = Some um; _ } ->
+                    is_empty_after_updates value um
                 | Hash (_, h) -> hash_equal empty_hash h
                 | Map _ -> assert false (* [cached_map <> None] *)
-                | Value (_, _, None) ->
+                | Value { updates = None; _ } ->
                     assert false (* [cached_value <> None] *)))
 
     let add_to_findv_cache t step v =
@@ -699,12 +703,13 @@ module Make (P : Private.S) = struct
       let of_t () =
         match t.v with
         | Map m -> Lwt.return (of_map m)
-        | Value (repo, v, None) -> Lwt.return (of_value repo v)
-        | Value (repo, v, Some um) -> (
+        | Value { repo; value; updates = None } ->
+            Lwt.return (of_value repo value)
+        | Value { repo; value; updates = Some um } -> (
             match StepMap.find_opt step um with
             | Some (Add v) -> Lwt.return (Some v)
             | Some Remove -> Lwt.return None
-            | None -> Lwt.return (of_value repo v))
+            | None -> Lwt.return (of_value repo value))
         | Hash (repo, h) -> (
             match cached_value t with
             | Some v -> Lwt.return (of_value repo v)
@@ -747,7 +752,8 @@ module Make (P : Private.S) = struct
       | Some m -> ok (list_of_map ?offset ?length m)
       | None -> (
           match t.v with
-          | Value (repo, n, None) -> ok (list_of_value ?offset ?length repo n)
+          | Value { repo; value; updates = None } ->
+              ok (list_of_value ?offset ?length repo value)
           | Hash (repo, h) -> (
               value_of_hash t repo h >>= function
               | Error _ as e -> Lwt.return e
@@ -871,8 +877,10 @@ module Make (P : Private.S) = struct
       in
       match t.v with
       | Map m -> Lwt.return (of_map m)
-      | Value (repo, n, None) -> Lwt.return (of_value repo n StepMap.empty)
-      | Value (repo, n, Some um) -> Lwt.return (of_value repo n um)
+      | Value { repo; value; updates = None } ->
+          Lwt.return (of_value repo value StepMap.empty)
+      | Value { repo; value; updates = Some um } ->
+          Lwt.return (of_value repo value um)
       | Hash (repo, h) -> (
           match (cached_value t, cached_map t) with
           | Some v, _ -> Lwt.return (of_value repo v StepMap.empty)
@@ -1287,10 +1295,10 @@ module Make (P : Private.S) = struct
         | Node.Hash _ ->
             Node.export ?clear repo n h;
             k ()
-        | Node.Value (_, x, None) ->
-            Stack.push (add_node n x) todo;
+        | Node.Value { value; updates = None; _ } ->
+            Stack.push (add_node n value) todo;
             k ()
-        | Map _ | Value (_, _, Some _) -> (
+        | Map _ | Value { updates = Some _; _ } -> (
             cnt.node_mem <- cnt.node_mem + 1;
             P.Node.mem node_t h >>= function
             | true ->
@@ -1298,14 +1306,14 @@ module Make (P : Private.S) = struct
                 k ()
             | false -> (
                 match n.v with
-                | Hash _ | Value (_, _, None) ->
+                | Hash _ | Value { updates = None; _ } ->
                     (* might happen if the node has already been added
                        (while the thread was block on P.Node.mem *)
                     k ()
                 | Map children ->
                     let l = StepMap.bindings children |> List.map snd in
                     add_steps_to_todo l n k
-                | Value (_, _, Some children) ->
+                | Value { updates = Some children; _ } ->
                     let l =
                       StepMap.bindings children
                       |> List.filter_map (function
@@ -1318,9 +1326,9 @@ module Make (P : Private.S) = struct
       (* 1. convert partial values to total values *)
       let* () =
         match n.Node.v with
-        | Value (_, _, Some _) ->
-            let+ v = Node.to_value n >|= get_ok "export" in
-            n.v <- Value (repo, v, None)
+        | Value { updates = None; _ } ->
+            let+ value = Node.to_value n >|= get_ok "export" in
+            n.v <- Value { repo; value; updates = None }
         | _ -> Lwt.return_unit
       in
       (* 2. push the current node job on the stack. *)
