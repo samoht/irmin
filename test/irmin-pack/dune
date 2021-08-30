@@ -12,6 +12,13 @@
  (modules test test_utils)
  (libraries alcotest astring irmin irmin-test test_pack))
 
+(executable
+ (name bench)
+ (modules bench)
+ (libraries irmin-pack tezos-context-hash rusage hex memtrace)
+ (preprocess
+  (pps ppx_irmin)))
+
 (rule
  (alias runtest)
  (package irmin-pack)
