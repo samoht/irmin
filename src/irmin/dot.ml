@@ -184,7 +184,8 @@ module Make (S : Store.S) = struct
                   [ `Style `Dotted; label_of_step l ]
                   (`Contents v)
             | `Node n ->
-                add_edge (`Node k) [ `Style `Solid; label_of_step l ] (`Node n))
+                add_edge (`Node k) [ `Style `Solid; label_of_step l ] (`Node n)
+            | `Inlined_contents _ -> failwith "TODO: Dot.fprintf")
           (Node.Val.list t))
       !nodes;
     List.iter

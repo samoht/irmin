@@ -29,10 +29,15 @@ module type S = sig
   type hash [@@deriving irmin]
   (** The type for keys. *)
 
+  type contents [@@deriving irmin]
+
   type step [@@deriving irmin]
   (** The type for steps between nodes. *)
 
-  type value = [ `Node of hash | `Contents of hash * metadata ]
+  type value =
+    [ `Node of hash
+    | `Contents of hash * metadata
+    | `Inlined_contents of contents * metadata ]
   [@@deriving irmin]
   (** The type for either (node) keys or (contents) keys combined with their
       metadata. *)
@@ -83,7 +88,13 @@ module type Maker = functor
      type step [@@deriving irmin]
    end)
   (M : Metadata.S)
-  -> S with type metadata = M.t and type hash = H.t and type step = P.step
+  (C : Contents.S)
+  ->
+  S
+    with type metadata = M.t
+     and type hash = H.t
+     and type step = P.step
+     and type contents = C.t
 
 module type Store = sig
   include Content_addressable.S
@@ -100,6 +111,9 @@ module type Store = sig
   module Metadata : Metadata.S
   (** [Metadata] provides base functions for node metadata. *)
 
+  module Contents : Contents.Store with type key = key
+  (** [Contents] is the underlying contents store. *)
+
   (** [Val] provides base functions for node values. *)
   module Val :
     S
@@ -107,9 +121,7 @@ module type Store = sig
        and type hash = key
        and type metadata = Metadata.t
        and type step = Path.step
-
-  module Contents : Contents.Store with type key = Val.hash
-  (** [Contents] is the underlying contents store. *)
+       and type contents = Contents.value
 end
 
 module type Graph = sig
@@ -218,7 +230,10 @@ module type Sigs = sig
       (C : Contents.Store)
       (S : Content_addressable.S with type key = C.key)
       (K : Hash.S with type t = S.key)
-      (V : S with type t = S.value and type hash = S.key)
+      (V : S
+             with type t = S.value
+              and type hash = S.key
+              and type contents = C.value)
       (M : Metadata.S with type t = V.metadata)
       (P : Path.S with type step = V.step) :
     Store
@@ -227,6 +242,7 @@ module type Sigs = sig
        and type value = S.value
        and module Path = P
        and module Metadata = M
+       and module Contents = C
        and module Val = V
 
   module type Graph = Graph

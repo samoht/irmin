@@ -320,9 +320,11 @@ module Make (P : Private.S) = struct
       P.Node.find (node_t t) k >|= function
       | None -> []
       | Some v ->
-          List.rev_map
+          List.filter_map
             (function
-              | _, `Node n -> `Node n | _, `Contents (c, _) -> `Contents c)
+              | _, `Node n -> Some (`Node n)
+              | _, `Contents (c, _) -> Some (`Contents c)
+              | _, `Inlined_contents _ -> None)
             (P.Node.Val.list v)
 
     let default_pred_commit t c =

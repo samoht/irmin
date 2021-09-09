@@ -33,6 +33,7 @@ module type S = sig
       with type key = Hash.t
        and module Path = Schema.Path
        and module Metadata = Schema.Metadata
+       and module Contents = Contents
 
   (** Private commit store. *)
   module Commit :

@@ -26,40 +26,42 @@ module Make
     (H : Type.S) (P : sig
       type step [@@deriving irmin]
     end)
-    (M : Metadata.S) =
+    (M : Metadata.S)
+    (C : Contents.S) =
 struct
   type hash = H.t [@@deriving irmin]
   type step = P.step [@@deriving irmin]
   type metadata = M.t [@@deriving irmin]
-  type kind = [ `Node | `Contents of M.t ]
+  type contents = C.t [@@deriving irmin]
 
-  let equal_metadata = Type.(unstage (equal M.t))
-
-  let kind_t =
-    let open Type in
-    variant "Tree.kind" (fun node contents contents_m -> function
-      | `Node -> node
-      | `Contents m ->
-          if equal_metadata m M.default then contents else contents_m m)
-    |~ case0 "node" `Node
-    |~ case0 "contents" (`Contents M.default)
-    |~ case1 "contents" M.t (fun m -> `Contents m)
-    |> sealv
-
-  type entry = { kind : kind; name : P.step; node : H.t } [@@deriving irmin]
+  type entry =
+    | Node of { name : P.step; hash : H.t }
+    | Contents of { name : P.step; hash : H.t }
+    | Contents_m of { metadata : M.t; name : P.step; hash : H.t }
+    | Inlined_contents of { name : P.step; value : C.t }
+    | Inlined_contents_m of { metadata : M.t; name : P.step; value : C.t }
+  [@@deriving irmin]
 
   let equal_entry_opt = Type.(unstage (equal [%typ: entry option]))
+  let equal_metadata = Type.(unstage (equal M.t))
 
-  let to_entry (k, v) =
+  let to_entry (name, v) =
     match v with
-    | `Node h -> { name = k; kind = `Node; node = h }
-    | `Contents (h, m) -> { name = k; kind = `Contents m; node = h }
+    | `Node hash -> Node { name; hash }
+    | `Contents (hash, metadata) ->
+        if equal_metadata metadata M.default then Contents { name; hash }
+        else Contents_m { metadata; name; hash }
+    | `Inlined_contents (value, metadata) ->
+        if equal_metadata metadata M.default then
+          Inlined_contents { name; value }
+        else Inlined_contents_m { metadata; name; value }
 
-  let of_entry n =
-    ( n.name,
-      match n.kind with
-      | `Node -> `Node n.node
-      | `Contents m -> `Contents (n.node, m) )
+  let of_entry = function
+    | Node n -> (n.name, `Node n.hash)
+    | Contents c -> (c.name, `Contents (c.hash, M.default))
+    | Contents_m c -> (c.name, `Contents (c.hash, c.metadata))
+    | Inlined_contents c -> (c.name, `Inlined_contents (c.value, M.default))
+    | Inlined_contents_m c -> (c.name, `Inlined_contents (c.value, c.metadata))
 
   module StepMap = Map.Make (struct
     type t = P.step
@@ -67,7 +69,11 @@ struct
     let compare = Type.(unstage (compare P.step_t))
   end)
 
-  type value = [ `Contents of hash * metadata | `Node of hash ]
+  type value =
+    [ `Contents of hash * metadata
+    | `Node of hash
+    | `Inlined_contents of contents * metadata ]
+
   type t = entry StepMap.t
 
   let v l =
@@ -105,12 +111,17 @@ struct
 
   let value_t =
     let open Type in
-    variant "value" (fun n c x -> function
+    variant "value" (fun n c x i y -> function
       | `Node h -> n h
-      | `Contents (h, m) -> if equal_metadata m M.default then c h else x (h, m))
+      | `Contents (h, m) -> if equal_metadata m M.default then c h else x (h, m)
+      | `Inlined_contents (c, m) ->
+          if equal_metadata m M.default then i c else y (c, m))
     |~ case1 "node" H.t (fun k -> `Node k)
     |~ case1 "contents" H.t (fun h -> `Contents (h, M.default))
     |~ case1 "contents-x" (pair H.t M.t) (fun (h, m) -> `Contents (h, m))
+    |~ case1 "inlined-contents" C.t (fun c -> `Inlined_contents (c, M.default))
+    |~ case1 "inlined-contents-x" (pair C.t M.t) (fun (h, m) ->
+           `Inlined_contents (h, m))
     |> sealv
 
   let of_entries e = v (List.rev_map of_entry e)
@@ -237,8 +248,11 @@ module Graph (S : Store) = struct
   module Graph = Object_graph.Make (S.Key) (U)
 
   let edges t =
-    List.rev_map
-      (function _, `Node n -> `Node n | _, `Contents (c, _) -> `Contents c)
+    List.filter_map
+      (function
+        | _, `Node n -> Some (`Node n)
+        | _, `Contents (c, _) -> Some (`Contents c)
+        | _, `Inlined_contents _ -> None)
       (S.Val.list t)
 
   let pp_key = Type.pp S.Key.t
@@ -299,7 +313,8 @@ module Graph (S : Store) = struct
       | None -> Lwt.return_some (`Node node)
       | Some (h, tl) -> (
           find_step t node h >>= function
-          | (None | Some (`Contents _)) as x -> Lwt.return x
+          | (None | Some (`Contents _) | Some (`Inlined_contents _)) as x ->
+              Lwt.return x
           | Some (`Node node) -> aux node tl)
     in
     aux node path
@@ -311,7 +326,8 @@ module Graph (S : Store) = struct
     let old_key = S.Val.find node label in
     let* old_node =
       match old_key with
-      | None | Some (`Contents _) -> Lwt.return S.Val.empty
+      | None | Some (`Contents _) | Some (`Inlined_contents _) ->
+          Lwt.return S.Val.empty
       | Some (`Node k) -> (
           S.find t k >|= function None -> S.Val.empty | Some v -> v)
     in
@@ -343,7 +359,8 @@ module Graph (S : Store) = struct
     | None -> (
         match n with
         | `Node n -> Lwt.return n
-        | `Contents _ -> failwith "TODO: Node.add")
+        | `Contents _ -> failwith "TODO: Node.Graph.add/1"
+        | `Inlined_contents _ -> failwith "TODO: Node.Graph.add/2")
 
   let rdecons_exn path =
     match Path.rdecons path with

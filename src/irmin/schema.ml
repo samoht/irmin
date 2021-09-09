@@ -22,14 +22,14 @@ module type S = sig
   module Commit : Commit.S with type hash = Hash.t and module Info := Info
   module Metadata : Metadata.S
   module Path : Path.S
+  module Contents : Contents.S
 
   module Node :
     Node.S
       with type metadata = Metadata.t
        and type hash = Hash.t
        and type step = Path.step
-
-  module Contents : Contents.S
+       and type contents = Contents.t
 end
 
 module type KV =
@@ -48,6 +48,6 @@ module KV (C : Contents.S) : KV with module Contents = C = struct
   module Commit = Commit.Make (Hash)
   module Path = Path.String_list
   module Metadata = Metadata.None
-  module Node = Node.Make (Hash) (Path) (Metadata)
+  module Node = Node.Make (Hash) (Path) (Metadata) (C)
   module Contents = C
 end

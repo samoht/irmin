@@ -385,6 +385,7 @@ module Make (P : Private.S) = struct
       let aux = function
         | `Node h -> `Node (of_hash repo h)
         | `Contents (c, m) -> `Contents (Contents.of_hash repo c, m)
+        | `Inlined_contents (c, m) -> `Contents (Contents.of_value c, m)
       in
       List.fold_left
         (fun acc (k, v) -> StepMap.add k (aux v) acc)
@@ -629,6 +630,10 @@ module Make (P : Private.S) = struct
             let (v : elt) = `Contents (c, m) in
             add_to_findv_cache t step v;
             Some v
+        | Some (`Inlined_contents (c, m)) ->
+            let (v : elt) = `Contents (Contents.of_value c, m) in
+            add_to_findv_cache t step v;
+            Some v
         | Some (`Node n) ->
             let n = of_hash repo n in
             let v = `Node n in
@@ -678,6 +683,9 @@ module Make (P : Private.S) = struct
               (k, n) :: acc
           | `Contents (c, m) ->
               let c = Contents.of_hash repo c in
+              (k, `Contents (c, m)) :: acc
+          | `Inlined_contents (c, m) ->
+              let c = Contents.of_value c in
               (k, `Contents (c, m)) :: acc)
         [] (List.rev t)
 
