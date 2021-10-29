@@ -144,6 +144,82 @@ let test_fold_undefined () =
   let expected = List.map fst bindings in
   test_fold ~order:`Undefined bindings expected
 
+let bin_of_proof = Irmin.Type.(unstage (to_bin_string Tree.proof_t))
+
+let proof_of_bin s =
+  match Irmin.Type.(unstage (of_bin_string Tree.proof_t)) s with
+  | Ok s -> s
+  | Error (`Msg e) -> Alcotest.fail e
+
+let test_proofs () =
+  (* init the store *)
+  let bindings = bindings steps in
+  let tree = Tree.empty in
+  let* tree =
+    Lwt_list.fold_left_s (fun tree (k, v) -> Tree.add tree k v) tree bindings
+  in
+  let* ctxt = persist_tree tree in
+
+  let ops = [ [ "00" ]; [ "01" ] ] in
+
+  (* Create a compressed parital Merle proof for ops *)
+  let tree = ctxt.tree in
+  let hash = Tree.hash tree in
+  let* () =
+    Lwt_list.iter_s
+      (fun k ->
+        Tree.find_tree tree k >|= function Some _ -> () | None -> assert false)
+      ops
+  in
+  let proof = Tree.to_proof tree in
+
+  (* test encoding *)
+  let enc = bin_of_proof proof in
+  let dec = proof_of_bin enc in
+  Alcotest.(check_repr Tree.proof_t) "same proof" proof dec;
+
+  (* test equivalence *)
+  let tree_proof = Tree.of_proof proof in
+  let* () =
+    Lwt_list.iter_s
+      (fun k ->
+        Tree.find_tree tree_proof k >|= function
+        | None -> Alcotest.failf "cannot read %a" Fmt.(Dump.list string) k
+        | Some _ -> ())
+      ops
+  in
+  Alcotest.(check_repr Store.Hash.t)
+    "same initial hash" hash (Tree.hash tree_proof);
+
+  let* _ =
+    Lwt_list.fold_left_s
+      (fun (tree, proof) (op, k, v) ->
+        match op with
+        | `Add ->
+            let* tree = Tree.add tree k v in
+            let+ proof = Tree.add proof k v in
+            Alcotest.(check_repr Store.Hash.t)
+              (Fmt.str "same hash add %a" Fmt.(Dump.list string) k)
+              (Tree.hash tree) (Tree.hash proof);
+            (tree, proof)
+        | `Del ->
+            let* tree = Tree.remove tree k in
+            let+ proof = Tree.remove proof k in
+            Alcotest.(check_repr Store.Hash.t)
+              (Fmt.str "same hash del %a" Fmt.(Dump.list string) k)
+              (Tree.hash tree) (Tree.hash proof);
+            (tree, proof))
+      (tree, tree_proof)
+      [
+        (`Add, [ "00" ], "0");
+        (`Add, [ "00" ], "1");
+        (`Del, [ "00" ], "0");
+        (`Add, [ "00" ], "0");
+        (`Add, [ "00" ], "1");
+      ]
+  in
+  Lwt.return ()
+
 let tests =
   [
     Alcotest.test_case "fold over keys in sorted order" `Quick (fun () ->
@@ -152,4 +228,6 @@ let tests =
         Lwt_main.run (test_fold_random ()));
     Alcotest.test_case "fold over keys in undefined order" `Quick (fun () ->
         Lwt_main.run (test_fold_undefined ()));
+    Alcotest.test_case "test Merkle proof" `Quick (fun () ->
+        Lwt_main.run (test_proofs ()));
   ]

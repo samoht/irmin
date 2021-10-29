@@ -84,7 +84,10 @@ module type S = sig
 
   (** {1 Manipulating Contents} *)
 
-  type 'a or_error = ('a, [ `Dangling_hash of hash ]) result
+  type error = [ `Dangling_hash of hash | `Pruned_hash of hash ]
+  (** The type for errors. *)
+
+  type 'a or_error = ('a, error) result
   (** Operations on lazy nodes can fail if the underlying store does not contain
       the expected hash. *)
 
@@ -305,6 +308,7 @@ module type S = sig
 
   type concrete =
     [ `Tree of (step * concrete) list | `Contents of contents * metadata ]
+  [@@deriving irmin]
   (** The type for concrete trees. *)
 
   val concrete_t : concrete Type.t
@@ -318,6 +322,23 @@ module type S = sig
 
   val to_concrete : t -> concrete Lwt.t
   (** [to_concrete t] is the concrete tree equivalent of the subtree [t]. *)
+
+  (** {1 Proofs} *)
+
+  type proof =
+    [ `Blinded of hash
+    | `Node of (step * proof) list
+    | `Inode of int * (int * proof) list
+    | `Contents of hash * metadata ]
+  [@@deriving irmin]
+  (** The type for tree proofs. *)
+
+  val to_proof : t -> proof
+  (** FIXME: do we really need Lwt.t here? *)
+
+  val of_proof : proof -> t
+  (** [of_proof p] is the tree representing the proof [p]. Blinded parts of the
+      proof will raise [Dangling_hash] when traversed. *)
 
   (** {1 Caches} *)
 
