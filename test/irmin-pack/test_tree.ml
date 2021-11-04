@@ -79,7 +79,7 @@ module Make (Conf : Irmin_pack.Conf.S) = struct
   let proof_of_ops tree ops =
     Store.Tree.clear tree;
     let+ () = touch tree ops in
-    Tree.to_proof tree
+    Tree.Proof.of_tree tree
 end
 
 module Default = Make (Conf)
@@ -171,10 +171,10 @@ let test_fold_undefined () =
   let expected = List.map fst bindings in
   test_fold ~order:`Undefined bindings expected
 
-let bin_of_proof = Irmin.Type.(unstage (to_bin_string Tree.proof_t))
+let bin_of_proof = Irmin.Type.(unstage (to_bin_string Tree.Proof.t))
 
 let proof_of_bin s =
-  match Irmin.Type.(unstage (of_bin_string Tree.proof_t)) s with
+  match Irmin.Type.(unstage (of_bin_string Tree.Proof.t)) s with
   | Ok s -> s
   | Error (`Msg e) -> Alcotest.fail e
 
@@ -217,10 +217,10 @@ let test_proofs () =
   (* test encoding *)
   let enc = bin_of_proof proof in
   let dec = proof_of_bin enc in
-  Alcotest.(check_repr Tree.proof_t) "same proof" proof dec;
+  Alcotest.(check_repr Tree.Proof.t) "same proof" proof dec;
 
   (* test equivalence *)
-  let tree_proof = Tree.of_proof proof in
+  let tree_proof = Tree.Proof.to_tree proof in
   let* () = check_completeness tree_proof ops in
   Alcotest.(check_repr Store.Hash.t)
     "same initial hash" hash (Tree.hash tree_proof);

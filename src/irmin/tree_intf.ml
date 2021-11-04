@@ -325,20 +325,25 @@ module type S = sig
 
   (** {1 Proofs} *)
 
-  type proof =
-    [ `Blinded of hash
-    | `Node of (step * proof) list
-    | `Inode of int * (int * proof) list
-    | `Contents of hash * metadata ]
-  [@@deriving irmin]
-  (** The type for tree proofs. *)
+  module Proof : sig
+    type tree
 
-  val to_proof : t -> proof
-  (** FIXME: do we really need Lwt.t here? *)
+    type t =
+      [ `Blinded of hash
+      | `Node of (step * t) list
+      | `Inode of int * (int * t) list
+      | `Contents of hash * metadata ]
+    [@@deriving irmin]
+    (** The type of tree proofs. *)
 
-  val of_proof : proof -> t
-  (** [of_proof p] is the tree representing the proof [p]. Blinded parts of the
-      proof will raise [Dangling_hash] when traversed. *)
+    val of_tree : tree -> t
+    (** FIXME: do we really need Lwt.t here? *)
+
+    val to_tree : t -> tree
+    (** [of_proof p] is the tree representing the proof [p]. Blinded parts of
+        the proof will raise [Dangling_hash] when traversed. *)
+  end
+  with type tree := t
 
   (** {1 Caches} *)
 

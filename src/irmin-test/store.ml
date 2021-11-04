@@ -1286,8 +1286,8 @@ module Make (S : S) = struct
           (fun acc (k, v) -> S.Tree.add_tree acc k v)
           t large_dir
       in
-      let p0 = S.Tree.to_proof c0 in
-      let t0 = S.Tree.of_proof p0 in
+      let p0 = S.Tree.Proof.of_tree c0 in
+      let t0 = S.Tree.Proof.to_tree p0 in
       let* () =
         let+ d0 = S.Tree.diff c0 t0 in
         check_diffs "proof roundtrip" [] d0
