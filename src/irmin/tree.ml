@@ -230,6 +230,9 @@ module Make (P : Private.S) = struct
       let hash = t.info.hash in
       if c then clear t;
       match (t.v, hash) with
+      | Hash (None, _), _ ->
+          (* The main export function never exports a pruned position. *)
+          assert false
       | Hash (Some repo', _), _ when repo == repo' -> ()
       | Hash (_, k), _ -> t.v <- Hash (Some repo, k)
       | Value _, None -> t.v <- Hash (Some repo, k)
@@ -289,10 +292,10 @@ module Make (P : Private.S) = struct
     let force_exn t =
       force t >|= function
       | Ok v -> v
-      | Error (`Pruned_hash h) ->
-          Fmt.failwith "Can't force pruned hash: %a" pp_hash h
-      | Error (`Dangling_hash h) ->
-          Fmt.failwith "Can't force dangling contents hash: %a" pp_hash h
+      | Error (`Pruned_hash hash) ->
+          raise (Pruned_hash { context = "force_exn"; hash })
+      | Error (`Dangling_hash hash) ->
+          raise (Dangling_hash { context = "force_exn"; hash })
 
     let equal (x : t) (y : t) =
       x == y
@@ -496,6 +499,9 @@ module Make (P : Private.S) = struct
       let hash = t.info.hash in
       if c then clear_info_fields t.info;
       match t.v with
+      | Hash (None, _) | Value (None, _, _) ->
+          (* The main export function never exports a pruned position. *)
+          assert false
       | Hash (repo', _) when repo' == repo -> ()
       | Hash (_, k) -> t.v <- Hash (repo, k)
       | Value (_, v, None) when P.Node.Val.is_empty v -> ()
@@ -1426,10 +1432,14 @@ module Make (P : Private.S) = struct
     in
     let rec on_node (`Node n) k =
       match n.Node.v with
-      | Node.Hash (_, h) ->
+      | Node.Hash (None, h) -> raise_pruned "export.node" h
+      | Node.Value (None, _, _) ->
+          let h = Node.hash ~cache:false n in
+          raise_pruned "export" h
+      | Node.Hash (Some _, h) ->
           Node.export ?clear (Some repo) n h;
           k ()
-      | Node.Value (_, v, None) ->
+      | Node.Value (Some _, v, None) ->
           let h = P.Node.Key.hash v in
           Node.export ?clear (Some repo) n h;
           k ()
@@ -1461,6 +1471,7 @@ module Make (P : Private.S) = struct
               k ())
     and on_contents (`Contents (c, _)) k =
       match c.Contents.v with
+      | Contents.Hash (None, h) -> raise_pruned "export.contents" h
       | Contents.Hash (Some repo, key) ->
           Contents.export ?clear repo c key;
           k ()
@@ -1473,7 +1484,6 @@ module Make (P : Private.S) = struct
           assert (equal_hash key key');
           Contents.export ?clear repo c key;
           k ()
-      | Contents.Hash (None, h) -> raise_pruned "export" h
     and on_node_seq seq k =
       match seq () with
       | Seq.Nil ->

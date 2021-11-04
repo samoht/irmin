@@ -108,6 +108,10 @@ let bindings steps =
   let zero = String.make 10 '0' in
   List.map (fun x -> ([ x ], zero)) steps
 
+let nested_bindings steps =
+  let zero = String.make 10 '0' in
+  List.concat_map (fun x -> List.map (fun y -> ([ x; y ], zero)) steps) steps
+
 let test_fold ~order bindings expected =
   let tree = Tree.empty in
   let* tree =
@@ -152,8 +156,7 @@ let proof_of_bin s =
   | Error (`Msg e) -> Alcotest.fail e
 
 let test_proofs () =
-  (* init the store *)
-  let bindings = bindings steps in
+  let bindings = nested_bindings steps in
   let tree = Tree.empty in
   let* tree =
     Lwt_list.fold_left_s (fun tree (k, v) -> Tree.add tree k v) tree bindings
