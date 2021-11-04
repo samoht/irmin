@@ -17,6 +17,7 @@
 
 open! Import
 include Tree_intf
+module Irmin_node = Node
 
 let src = Logs.Src.create "irmin.tree" ~doc:"Persistent lazy trees for Irmin"
 
@@ -1752,43 +1753,37 @@ module Make (P : Private.S) = struct
 
   module Proof = struct
     type tree = t
+    type node_proof = P.Node.Val.proof
 
-    type t =
-      [ `Blinded of P.Hash.t
-      | `Node of (Path.step * t) list
-      | `Inode of int * (int * t) list
-      | `Contents of P.Hash.t * Metadata.t ]
-    [@@deriving irmin]
+    type t = (P.Hash.t, Path.step, Metadata.t) proof [@@deriving irmin]
+    (** The type of tree proofs. *)
 
     let rec of_tree : tree -> t = function
-      | `Contents (c, h) -> `Contents (Contents.hash c, h)
-      | `Node node -> proof_of_node node
+      | `Contents (c, h) -> Contents (Contents.hash c, h)
+      | `Node node -> of_node node
 
-    and proof_of_node node : t =
+    and of_node node : t =
       match
         Node.to_value_aux ~cache:false ~value_of_hash ~return:Fun.id node
       with
-      | Error (`Dangling_hash h) -> `Blinded h
-      | Error (`Pruned_hash h) -> `Blinded h
-      | Ok v ->
-          let p = P.Node.Val.to_proof v in
-          proof_of_node_proof node p
+      | Error (`Dangling_hash h) -> Blinded h
+      | Error (`Pruned_hash h) -> Blinded h
+      | Ok v -> of_node_proof node (P.Node.Val.to_proof v)
 
-    and proof_of_node_proof node p : t =
-      match p with
-      | `Blinded _ as x -> x
-      | `Inode i -> proof_of_inode node i
-      | `Values vs -> proof_of_values node vs
+    and of_node_proof node : node_proof -> t = function
+      | Blinded h -> Blinded h
+      | Inode (len, proofs) -> of_inode node len proofs
+      | Values vs -> proof_of_values node vs
 
-    and proof_of_inode node (len, proofs) : t =
+    and of_inode node len proofs : t =
       let proofs =
         List.map
           (fun (index, proof) ->
-            let proof = proof_of_node_proof node proof in
+            let proof = of_node_proof node proof in
             (index, proof))
           proofs
       in
-      `Inode (len, proofs)
+      Inode (len, proofs)
 
     and proof_of_values node steps : t =
       let findv =
@@ -1804,31 +1799,31 @@ module Make (P : Private.S) = struct
               let p = of_tree t in
               (step, p) :: acc)
         [] steps
-      |> fun steps -> `Node (List.rev steps)
+      |> fun steps -> Node (List.rev steps)
 
     let proof_steps acc p =
       let rec aux acc : t -> _ = function
-        | `Blinded _ | `Contents _ -> acc
-        | `Inode (_, ts) -> List.fold_left (fun acc (_, p) -> aux acc p) acc ts
-        | `Node vs -> vs @ acc
+        | Blinded _ | Contents _ -> acc
+        | Inode (_, ts) -> List.fold_left (fun acc (_, p) -> aux acc p) acc ts
+        | Node vs -> vs @ acc
       in
       aux acc p
 
-    let hash_of_node_proof p =
+    let hash_of_node_proof (p : node_proof) =
       match p with
-      | `Blinded h -> h
+      | Blinded h -> h
       | _ ->
           let v = P.Node.Val.of_proof p in
           P.Node.Key.hash v
 
     let rec to_tree (p : t) : tree =
       match p with
-      | `Blinded h -> `Node (Node.of_hash None h)
-      | `Contents (c, h) -> `Contents (Contents.of_hash None c, h)
-      | `Node n -> of_proof_steps n
-      | `Inode i -> of_inode i
+      | Blinded h -> `Node (Node.of_hash None h)
+      | Contents (c, h) -> `Contents (Contents.of_hash None c, h)
+      | Node n -> tree_of_proof_steps n
+      | Inode (i, children) -> tree_of_inode i children
 
-    and of_proof_steps n =
+    and tree_of_proof_steps n : tree =
       let bindings =
         List.to_seq n
         |> Seq.map (fun (s, p) ->
@@ -1838,43 +1833,42 @@ module Make (P : Private.S) = struct
       in
       `Node (Node.of_map bindings)
 
-    and of_inode (len, proofs) =
+    and tree_of_inode len proofs : tree =
       let elts =
         proofs
         |> List.fold_left (fun acc (_, s) -> proof_steps acc s) []
         |> List.rev_map (fun (s, p) -> (s, to_tree p))
       in
       let n =
-        if List.length elts = len then
+        if List.compare_length_with elts len = 0 then
           (* we have a complete proof! *)
           Node.of_map (StepMap.of_seq (List.to_seq elts))
         else
-          (* we have a partial proof, buid a node. *)
-          let p = List.map (fun (i, p) -> (i, node_proof_of_proof p)) proofs in
-          let p = `Inode (len, p) in
+          (* we have a partial proof, build a node. *)
+          let p = List.map (fun (i, p) -> (i, to_node_proof p)) proofs in
+          let p = Irmin_node.Inode (len, p) in
           let n = P.Node.Val.of_proof p in
           Node.of_value None n
       in
       List.iter (fun (s, elt) -> Node.add_to_findv_cache n s elt) elts;
       `Node n
 
-    and node_proof_of_proof = function
-      | `Contents (h, _) -> `Blinded h
-      | `Blinded _ as x -> x
-      | `Inode i -> node_proof_of_inode i
-      | `Node n -> node_proof_of_node n
+    and to_node_proof : t -> node_proof = function
+      | Contents (h, _) -> Blinded h
+      | Blinded x -> Blinded x
+      | Inode (i, children) -> node_proof_of_inode i children
+      | Node n -> node_proof_of_node n
 
-    and node_proof_of_inode (len, proofs) =
-      `Inode (len, List.map (fun (i, p) -> (i, node_proof_of_proof p)) proofs)
+    and node_proof_of_inode len proofs : node_proof =
+      Inode (len, List.map (fun (i, p) -> (i, to_node_proof p)) proofs)
 
-    and node_proof_of_node n =
-      `Values (List.map (fun (s, n) -> (s, node_value_of_proof n)) n)
+    and node_proof_of_node n : node_proof =
+      Values (List.map (fun (s, n) -> (s, node_value_of_proof n)) n)
 
-    and node_value_of_proof n =
-      match n with
-      | `Contents _ as x -> x
-      | _ ->
-          let p = node_proof_of_proof n in
+    and node_value_of_proof = function
+      | Contents (c, m) -> `Contents (c, m)
+      | t ->
+          let p = to_node_proof t in
           let h = hash_of_node_proof p in
           `Node h
   end
