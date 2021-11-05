@@ -354,10 +354,10 @@ module type S = sig
     type tree
 
     type t = (hash, step, metadata) Proof.t [@@deriving irmin]
-    (** The type of tree proofs. *)
 
     val of_tree : tree -> t
-    (** FIXME: do we really need Lwt.t here? *)
+    (** [of_tree t] is the proof representing the tree [t]. Shallow hashes 
+         will be blinded. *)
 
     val to_tree : t -> tree
     (** [of_proof p] is the tree representing the proof [p]. Blinded parts of

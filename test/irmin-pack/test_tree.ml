@@ -203,7 +203,8 @@ let check_equivalence tree proof (op, k, v) =
         (Tree.hash tree) (Tree.hash proof);
       (tree, proof)
 
-let test_proofs () =
+let test_proofs steps =
+  (* init the store *)
   let bindings = bindings steps in
   let* ctxt = init_tree bindings in
   let ops = [ [ "00" ]; [ "01" ] ] in
@@ -276,6 +277,16 @@ let test_large_proofs () =
       Fmt.pr "- binary Merkle trees         : %dkB\n%!" k2)
     [ a; b; c; d ]
 
+let test_large_inode () = test_proofs steps
+
+let steps =
+["00"; "01"; "02"; "03"; "05"; "06"; "07"; "09"; "0a"; "0b"; "0c";
+"0e"; "0f"; "10"; "11"; "12"; "13"; "14"; "15"; "16"; "17"; "19";
+"1a"; "1b"; "1c"; "1d"; "1e"; "1f"; "20"; "22"; "23"; "25"; "26";
+"27"; "28"; "2a"; ][@@ocamlformat "disable"]
+
+let test_small_inode () = test_proofs steps
+
 let tests =
   [
     Alcotest.test_case "fold over keys in sorted order" `Quick (fun () ->
@@ -284,8 +295,10 @@ let tests =
         Lwt_main.run (test_fold_random ()));
     Alcotest.test_case "fold over keys in undefined order" `Quick (fun () ->
         Lwt_main.run (test_fold_undefined ()));
-    Alcotest.test_case "test Merkle proof" `Quick (fun () ->
-        Lwt_main.run (test_proofs ()));
+    Alcotest.test_case "test Merkle proof for large inodes" `Quick (fun () ->
+        Lwt_main.run (test_large_inode ()));
+    Alcotest.test_case "test Merkle proof for small inodes" `Quick (fun () ->
+        Lwt_main.run (test_small_inode ()));
     Alcotest.test_case "test large Merkle proof" `Slow (fun () ->
         Lwt_main.run (test_large_proofs ()));
   ]

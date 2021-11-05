@@ -1105,7 +1105,16 @@ struct
             Concrete.Tree { depth; length; pointers }
 
       let to_proof la t =
-        let p = to_concrete ~force:false la t in
+        let p =
+          if t.stable then
+            (* To preserve the stable hash, the proof needs to contain
+               all the underlying values. *)
+            let bindings =
+              seq la t |> Seq.map Concrete.to_entry |> List.of_seq
+            in
+            Concrete.Values bindings
+          else to_concrete ~force:false la t
+        in
         proof_of_concrete t.hash p
 
       let of_proof (proof : proof) =
