@@ -631,7 +631,7 @@ struct
         | `Empty -> Fmt.pf ppf "concrete subtrees cannot be empty"
     end
 
-    let to_concrete ?(force = false) (la : 'ptr layout) (t : 'ptr t) =
+    let to_concrete ~force (la : 'ptr layout) (t : 'ptr t) =
       let rec aux t =
         match t.v with
         | Tree tr ->
