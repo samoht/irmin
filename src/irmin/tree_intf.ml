@@ -328,7 +328,7 @@ module type S = sig
   type proof =
     [ `Blinded of hash
     | `Node of (step * proof) list
-    | `Inode of int * (int * proof) list
+    | `Inode of int * (int list * proof) list
     | `Contents of hash * metadata ]
   [@@deriving irmin]
   (** The type for tree proofs. *)

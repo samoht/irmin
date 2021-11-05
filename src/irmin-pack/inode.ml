@@ -1034,18 +1034,24 @@ struct
     type proof =
       [ `Blinded of hash
       | `Values of (step * value) list
-      | `Inode of int * (int * proof) list ]
+      | `Inode of int * (int list * proof) list ]
     [@@deriving irmin]
 
     module Proof = struct
-      let rec proof_of_concrete h = function
-        | Concrete.Blinded -> `Blinded h
+      let rec proof_of_concrete h : Concrete.t -> proof = function
+        | Concrete.Blinded -> `Blinded (Lazy.force h)
         | Concrete.Values vs -> `Values (List.map Concrete.of_entry vs)
         | Concrete.Tree tr ->
             let tree =
               List.fold_left
-                (fun acc e ->
-                  (e.Concrete.index, proof_of_concrete e.pointer e.tree) :: acc)
+                (fun acc (e : _ Concrete.pointer) ->
+                  let p = proof_of_concrete (lazy e.pointer) e.tree in
+                  let e =
+                    match p with
+                    | `Inode (_, [ (index, proof) ]) -> (e.index :: index, proof)
+                    | p -> ([ e.index ], p)
+                  in
+                  e :: acc)
                 [] tr.pointers
             in
             let tree = List.rev tree in
@@ -1060,12 +1066,17 @@ struct
             let es =
               List.fold_left
                 (fun acc (index, proof) ->
-                  let pointer = hash (depth + 1) proof in
+                  let pointer = hash (depth + List.length index) proof in
                   (index, Broken pointer) :: acc)
                 [] tree
             in
             let entries = Array.make Conf.entries None in
-            List.iter (fun (i, ptr) -> entries.(i) <- Some ptr) es;
+            List.iter
+              (fun (index, ptr) ->
+                match index with
+                | [] -> assert false
+                | i :: _ -> entries.(i) <- Some ptr)
+              es;
             let v : truncated_ptr v = Tree { depth; length; entries } in
             hash_v v
         | `Blinded h -> h
@@ -1077,9 +1088,18 @@ struct
             let tree =
               List.fold_left
                 (fun acc (index, proof) ->
+                  let index, proof =
+                    match List.rev index with
+                    | [] -> assert false
+                    | i :: ext ->
+                        List.fold_left
+                          (fun (j, proof) i ->
+                            (i, `Inode (length, [ ([ j ], proof) ])))
+                          (i, proof) ext
+                  in
                   let tree = concrete_of_proof (depth + 1) proof in
                   let pointer = hash (depth + 1) proof in
-                  { Concrete.index; tree; pointer } :: acc)
+                  { Concrete.tree; pointer; index } :: acc)
                 [] tree
             in
             let pointers = List.rev tree in
@@ -1087,11 +1107,14 @@ struct
 
       let to_proof la t =
         let p = to_concrete ~force:false la t in
-        proof_of_concrete (Lazy.force t.hash) p
+        proof_of_concrete t.hash p
 
       let of_proof (proof : proof) =
         let c = concrete_of_proof 0 proof in
         of_concrete_exn c
+
+      let of_concrete t = proof_of_concrete (lazy (failwith "blinded root")) t
+      let to_concrete = concrete_of_proof 0
     end
   end
 
@@ -1319,6 +1342,7 @@ struct
       apply t { f }
 
     module Concrete = I.Concrete
+    module Proof = I.Proof
 
     let to_concrete t =
       apply t { f = (fun la v -> I.to_concrete ~force:true la v) }

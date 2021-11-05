@@ -129,7 +129,7 @@ struct
   let t = Type.map Type.(list entry_t) of_entries entries
 
   type proof =
-    [ `Inode of int * (int * proof) list
+    [ `Inode of int * (int list * proof) list
     | `Blinded of hash
     | `Values of (step * value) list ]
   [@@deriving irmin]

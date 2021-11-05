@@ -123,6 +123,11 @@ module type Internal = sig
 
         The result is [Error e] when a subtree tree of [c] has an integrity
         error. *)
+
+    module Proof : sig
+      val of_concrete : Concrete.t -> proof
+      val to_concrete : proof -> Concrete.t
+    end
   end
 end
 

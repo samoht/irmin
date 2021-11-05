@@ -104,7 +104,7 @@ module type S = sig
   type proof =
     [ `Blinded of hash
     | `Values of (step * value) list
-    | `Inode of int (* total number of values *) * (int * proof) list ]
+    | `Inode of int (* total number of values *) * (int list * proof) list ]
   [@@deriving irmin]
   (** The type for proof trees. *)
 

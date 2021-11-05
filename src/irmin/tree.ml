@@ -1751,7 +1751,7 @@ module Make (P : Private.S) = struct
   type proof =
     [ `Blinded of P.Hash.t
     | `Node of (Path.step * proof) list
-    | `Inode of int * (int * proof) list
+    | `Inode of int * (int list * proof) list
     | `Contents of P.Hash.t * Metadata.t ]
   [@@deriving irmin]
 
@@ -1778,9 +1778,7 @@ module Make (P : Private.S) = struct
   and proof_of_inode node (len, proofs) : proof =
     let proofs =
       List.map
-        (fun (index, proof) ->
-          let proof = proof_of_node_proof node proof in
-          (index, proof))
+        (fun (index, proof) -> (index, proof_of_node_proof node proof))
         proofs
     in
     `Inode (len, proofs)
@@ -1823,7 +1821,7 @@ module Make (P : Private.S) = struct
     | `Node n -> of_proof_steps n
     | `Inode i -> of_inode i
 
-  and of_proof_steps n =
+  and of_proof_steps n : t =
     let bindings =
       List.to_seq n
       |> Seq.map (fun (s, p) ->
@@ -1833,7 +1831,7 @@ module Make (P : Private.S) = struct
     in
     `Node (Node.of_map bindings)
 
-  and of_inode (len, proofs) =
+  and of_inode (len, proofs) : t =
     let elts =
       proofs
       |> List.fold_left (fun acc (_, s) -> proof_steps acc s) []
@@ -1845,27 +1843,26 @@ module Make (P : Private.S) = struct
         Node.of_map (StepMap.of_seq (List.to_seq elts))
       else
         (* we have a partial proof, buid a node. *)
-        let p = List.map (fun (i, p) -> (i, node_proof_of_proof p)) proofs in
-        let p = `Inode (len, p) in
+        let p = node_proof_of_inode (len, proofs) in
         let n = P.Node.Val.of_proof p in
         Node.of_value None n
     in
     List.iter (fun (s, elt) -> Node.add_to_findv_cache n s elt) elts;
     `Node n
 
-  and node_proof_of_proof = function
+  and node_proof_of_proof : proof -> P.Node.Val.proof = function
     | `Contents (h, _) -> `Blinded h
     | `Blinded _ as x -> x
     | `Inode i -> node_proof_of_inode i
     | `Node n -> node_proof_of_node n
 
-  and node_proof_of_inode (len, proofs) =
+  and node_proof_of_inode (len, proofs) : P.Node.Val.proof =
     `Inode (len, List.map (fun (i, p) -> (i, node_proof_of_proof p)) proofs)
 
-  and node_proof_of_node n =
+  and node_proof_of_node n : P.Node.Val.proof =
     `Values (List.map (fun (s, n) -> (s, node_value_of_proof n)) n)
 
-  and node_value_of_proof n =
+  and node_value_of_proof n : P.Node.Val.value =
     match n with
     | `Contents _ as x -> x
     | _ ->
