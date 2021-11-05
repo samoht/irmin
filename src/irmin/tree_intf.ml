@@ -334,7 +334,7 @@ module type S = sig
   (** The type for tree proofs. *)
 
   val to_proof : t -> proof
-  (** FIXME: do we really need Lwt.t here? *)
+  (** [to_proof t] *)
 
   val of_proof : proof -> t
   (** [of_proof p] is the tree representing the proof [p]. Blinded parts of the
