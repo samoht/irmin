@@ -1752,8 +1752,8 @@ module Make (P : Private.S) = struct
   module Proof = struct
     type tree = t
     type node_proof = P.Node.Val.proof
+    type t = (P.Hash.t, Path.step, Metadata.t) Proof.t [@@deriving irmin]
 
-    type t = (P.Hash.t, Path.step, Metadata.t) proof [@@deriving irmin]
     (** The type of tree proofs. *)
 
     let rec of_tree : tree -> t = function
@@ -1799,7 +1799,7 @@ module Make (P : Private.S) = struct
               let p = of_tree t in
               (step, p) :: acc)
         [] steps
-      |> fun steps -> Node (List.rev steps)
+      |> fun steps -> Proof.Node (List.rev steps)
 
     let proof_steps acc p =
       let rec aux acc : t -> _ = function
@@ -1846,7 +1846,7 @@ module Make (P : Private.S) = struct
         else
           (* we have a partial proof, build a node. *)
           let p = List.map (fun (i, p) -> (i, to_node_proof p)) proofs in
-          let p = Irmin_node.Inode (len, p) in
+          let p = Irmin_node.Proof.Inode (len, p) in
           let n = P.Node.Val.of_proof p in
           Node.of_value None n
       in

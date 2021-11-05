@@ -18,26 +18,28 @@
 open! Import
 open S
 
-type ('hash, 'step, 'value) proof =
-  | Blinded of 'hash
-  | Values of ('step * 'value) list
-  | Inode of
-      int (* total number of values *)
-      * (int list * ('hash, 'step, 'value) proof) list
+module Proof = struct
+  type ('hash, 'step, 'value) t =
+    | Blinded of 'hash
+    | Values of ('step * 'value) list
+    | Inode of
+        int (* total number of values *)
+        * (int list * ('hash, 'step, 'value) t) list
 
-(* TODO(craigfe): fix [ppx_irmin] for recursive types with type parameters. *)
-let proof_t hash_t step_t value_t =
-  let open Type in
-  mu (fun proof_t ->
-      variant "proof" (fun blinded values inode -> function
-        | Blinded x1 -> blinded x1
-        | Values x1 -> values x1
-        | Inode (x1, x2) -> inode (x1, x2))
-      |~ case1 "Blinded" hash_t (fun x1 -> Blinded x1)
-      |~ case1 "Values" [%typ: (step * value) list] (fun x1 -> Values x1)
-      |~ case1 "Inode" [%typ: int * (int list * proof) list] (fun (x1, x2) ->
-             Inode (x1, x2))
-      |> sealv)
+  (* TODO(craigfe): fix [ppx_irmin] for recursive types with type parameters. *)
+  let t hash_t step_t value_t =
+    let open Type in
+    mu (fun t ->
+        variant "proof" (fun blinded values inode -> function
+          | Blinded x1 -> blinded x1
+          | Values x1 -> values x1
+          | Inode (x1, x2) -> inode (x1, x2))
+        |~ case1 "Blinded" hash_t (fun x1 -> Blinded x1)
+        |~ case1 "Values" [%typ: (step * value) list] (fun x1 -> Values x1)
+        |~ case1 "Inode" [%typ: int * (int list * t) list] (fun (x1, x2) ->
+               Inode (x1, x2))
+        |> sealv)
+end
 
 module type S = sig
   (** {1 Node values} *)
@@ -122,7 +124,7 @@ module type S = sig
 
   (** {1 Proofs} *)
 
-  type nonrec proof = (hash, step, value) proof [@@deriving irmin]
+  type nonrec proof = (hash, step, value) Proof.t [@@deriving irmin]
   (** The type for proof trees. *)
 
   val to_proof : t -> proof
@@ -262,13 +264,15 @@ module type GRAPH = sig
 end
 
 module type Node = sig
-  type nonrec ('hash, 'step, 'value) proof = ('hash, 'step, 'value) proof =
-    | Blinded of 'hash
-    | Values of ('step * 'value) list
-    | Inode of
-        int (* total number of values *)
-        * (int list * ('hash, 'step, 'value) proof) list
-  [@@deriving irmin]
+  module Proof : sig
+    type ('hash, 'step, 'value) t = ('hash, 'step, 'value) Proof.t =
+      | Blinded of 'hash
+      | Values of ('step * 'value) list
+      | Inode of
+          int (* total number of values *)
+          * (int list * ('hash, 'step, 'value) t) list
+    [@@deriving irmin]
+  end
 
   module type S = S
   module type Maker = Maker

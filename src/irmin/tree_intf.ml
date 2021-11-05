@@ -17,28 +17,30 @@
 
 open! Import
 
-type ('hash, 'step, 'metadata) proof =
-  | Blinded of 'hash
-  | Node of ('step * ('hash, 'step, 'metadata) proof) list
-  | Inode of int * (int list * ('hash, 'step, 'metadata) proof) list
-  | Contents of 'hash * 'metadata
+module Proof = struct
+  type ('hash, 'step, 'metadata) t =
+    | Blinded of 'hash
+    | Node of ('step * ('hash, 'step, 'metadata) t) list
+    | Inode of int * (int list * ('hash, 'step, 'metadata) t) list
+    | Contents of 'hash * 'metadata
 
-(* TODO(craigfe): fix [ppx_irmin] for recursive types with type parameters. *)
-let proof_t hash_t step_t metadata_t =
-  let open Type in
-  mu (fun proof_t ->
-      variant "proof" (fun blinded node inode contents -> function
-        | Blinded x1 -> blinded x1
-        | Node x1 -> node x1
-        | Inode (x1, x2) -> inode (x1, x2)
-        | Contents (x1, x2) -> contents (x1, x2))
-      |~ case1 "Blinded" hash_t (fun x1 -> Blinded x1)
-      |~ case1 "Node" [%typ: (step * proof) list] (fun x1 -> Node x1)
-      |~ case1 "Inode" [%typ: int * (int list * proof) list] (fun (x1, x2) ->
-             Inode (x1, x2))
-      |~ case1 "Contents" [%typ: hash * metadata] (fun (x1, x2) ->
-             Contents (x1, x2))
-      |> Type.sealv)
+  (* TODO(craigfe): fix [ppx_irmin] for recursive types with type parameters. *)
+  let t hash_t step_t metadata_t =
+    let open Type in
+    mu (fun t ->
+        variant "proof" (fun blinded node inode contents -> function
+          | Blinded x1 -> blinded x1
+          | Node x1 -> node x1
+          | Inode (x1, x2) -> inode (x1, x2)
+          | Contents (x1, x2) -> contents (x1, x2))
+        |~ case1 "Blinded" hash_t (fun x1 -> Blinded x1)
+        |~ case1 "Node" [%typ: (step * t) list] (fun x1 -> Node x1)
+        |~ case1 "Inode" [%typ: int * (int list * t) list] (fun (x1, x2) ->
+               Inode (x1, x2))
+        |~ case1 "Contents" [%typ: hash * metadata] (fun (x1, x2) ->
+               Contents (x1, x2))
+        |> Type.sealv)
+end
 
 module type S = sig
   type key
@@ -351,7 +353,7 @@ module type S = sig
   module Proof : sig
     type tree
 
-    type t = (hash, step, metadata) proof [@@deriving irmin]
+    type t = (hash, step, metadata) Proof.t [@@deriving irmin]
     (** The type of tree proofs. *)
 
     val of_tree : tree -> t
@@ -395,13 +397,14 @@ module type S = sig
 end
 
 module type Tree = sig
-  type nonrec ('hash, 'step, 'metadata) proof =
-        ('hash, 'step, 'metadata) proof =
-    | Blinded of 'hash
-    | Node of ('step * ('hash, 'step, 'metadata) proof) list
-    | Inode of int * (int list * ('hash, 'step, 'metadata) proof) list
-    | Contents of 'hash * 'metadata
-  [@@deriving irmin]
+  module Proof : sig
+    type ('hash, 'step, 'metadata) t = ('hash, 'step, 'metadata) Proof.t =
+      | Blinded of 'hash
+      | Node of ('step * ('hash, 'step, 'metadata) t) list
+      | Inode of int * (int list * ('hash, 'step, 'metadata) t) list
+      | Contents of 'hash * 'metadata
+    [@@deriving irmin]
+  end
 
   module type S = sig
     include S

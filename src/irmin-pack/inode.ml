@@ -1031,7 +1031,7 @@ struct
 
     let is_tree t = match t.v with Tree _ -> true | Values _ -> false
 
-    type nonrec proof = (hash, step, value) Irmin.Private.Node.proof
+    type nonrec proof = (hash, step, value) Irmin.Private.Node.Proof.t
     [@@deriving irmin]
 
     module Proof = struct
@@ -1092,7 +1092,7 @@ struct
                         List.fold_left
                           (fun (j, proof) i ->
                             ( i,
-                              Irmin.Private.Node.Inode
+                              Irmin.Private.Node.Proof.Inode
                                 (length, [ ([ j ], proof) ]) ))
                           (i, proof) ext
                   in
