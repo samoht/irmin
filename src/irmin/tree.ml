@@ -1749,8 +1749,6 @@ module Make (P : Private.S) = struct
           | Value _ -> `Value
           | Hash _ -> `Hash)
 
-  let value_of_hash ~cache:_ _node _repo h = Error (`Pruned_hash h)
-
   module Proof = struct
     type tree = t
     type node_proof = P.Node.Val.proof
@@ -1764,6 +1762,7 @@ module Make (P : Private.S) = struct
 
     and of_node node : t =
       match
+        let value_of_hash ~cache:_ _node _repo h = Error (`Pruned_hash h) in
         Node.to_value_aux ~cache:false ~value_of_hash ~return:Fun.id node
       with
       | Error (`Dangling_hash h) -> Blinded h
@@ -1787,6 +1786,7 @@ module Make (P : Private.S) = struct
 
     and proof_of_values node steps : t =
       let findv =
+        let value_of_hash ~cache:_ _node _repo h = Error (`Pruned_hash h) in
         Node.findv_aux ~value_of_hash ~return:Fun.id
           ~bind:(fun x f -> f x)
           ~cache:false "to_proof" node

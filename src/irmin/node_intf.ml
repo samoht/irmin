@@ -23,7 +23,7 @@ type ('hash, 'step, 'value) proof =
   | Values of ('step * 'value) list
   | Inode of
       int (* total number of values *)
-      * (int * ('hash, 'step, 'value) proof) list
+      * (int list * ('hash, 'step, 'value) proof) list
 
 (* TODO(craigfe): fix [ppx_irmin] for recursive types with type parameters. *)
 let proof_t hash_t step_t value_t =
@@ -35,7 +35,7 @@ let proof_t hash_t step_t value_t =
         | Inode (x1, x2) -> inode (x1, x2))
       |~ case1 "Blinded" hash_t (fun x1 -> Blinded x1)
       |~ case1 "Values" [%typ: (step * value) list] (fun x1 -> Values x1)
-      |~ case1 "Inode" [%typ: int * (int * proof) list] (fun (x1, x2) ->
+      |~ case1 "Inode" [%typ: int * (int list * proof) list] (fun (x1, x2) ->
              Inode (x1, x2))
       |> sealv)
 
@@ -267,7 +267,7 @@ module type Node = sig
     | Values of ('step * 'value) list
     | Inode of
         int (* total number of values *)
-        * (int * ('hash, 'step, 'value) proof) list
+        * (int list * ('hash, 'step, 'value) proof) list
   [@@deriving irmin]
 
   module type S = S

@@ -20,7 +20,7 @@ open! Import
 type ('hash, 'step, 'metadata) proof =
   | Blinded of 'hash
   | Node of ('step * ('hash, 'step, 'metadata) proof) list
-  | Inode of int * (int * ('hash, 'step, 'metadata) proof) list
+  | Inode of int * (int list * ('hash, 'step, 'metadata) proof) list
   | Contents of 'hash * 'metadata
 
 (* TODO(craigfe): fix [ppx_irmin] for recursive types with type parameters. *)
@@ -34,7 +34,7 @@ let proof_t hash_t step_t metadata_t =
         | Contents (x1, x2) -> contents (x1, x2))
       |~ case1 "Blinded" hash_t (fun x1 -> Blinded x1)
       |~ case1 "Node" [%typ: (step * proof) list] (fun x1 -> Node x1)
-      |~ case1 "Inode" [%typ: int * (int * proof) list] (fun (x1, x2) ->
+      |~ case1 "Inode" [%typ: int * (int list * proof) list] (fun (x1, x2) ->
              Inode (x1, x2))
       |~ case1 "Contents" [%typ: hash * metadata] (fun (x1, x2) ->
              Contents (x1, x2))
@@ -399,7 +399,7 @@ module type Tree = sig
         ('hash, 'step, 'metadata) proof =
     | Blinded of 'hash
     | Node of ('step * ('hash, 'step, 'metadata) proof) list
-    | Inode of int * (int * ('hash, 'step, 'metadata) proof) list
+    | Inode of int * (int list * ('hash, 'step, 'metadata) proof) list
     | Contents of 'hash * 'metadata
   [@@deriving irmin]
 
