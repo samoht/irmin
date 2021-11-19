@@ -1763,6 +1763,9 @@ module Make (P : Private.S) = struct
     type node_proof = P.Node.Val.proof
     type t = (P.Hash.t, Path.step, Metadata.t) Proof.t [@@deriving irmin]
 
+    type stream = (P.Hash.t, Path.step, Metadata.t) Proof.Stream.t
+    [@@deriving irmin]
+
     (** The type of tree proofs. *)
 
     let rec of_tree : tree -> t = function

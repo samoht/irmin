@@ -27,7 +27,7 @@ module Proof = struct
       }
     | Contents of 'hash * 'metadata
 
-  (* TODO(craigfe): fix [ppx_irmin] for recursive types with type parameters. *)
+  (* TODO(craigfe): fix [ppx_irmin] for inline parameters. *)
   let t hash_t step_t metadata_t =
     let open Type in
     mu (fun t ->
@@ -43,6 +43,24 @@ module Proof = struct
         |~ case1 "Contents" [%typ: hash * metadata] (fun (x1, x2) ->
                Contents (x1, x2))
         |> Type.sealv)
+
+  module Stream = struct
+    type 'hash inode = { length : int; proofs : (int * 'hash) list }
+    [@@deriving irmin]
+
+    type ('hash, 'step, 'metadata) elt =
+      | Empty
+      | Node of ('step * 'hash) list
+      | Inode of 'hash inode
+      | Leaf of 'hash
+      | Leaf_m of 'hash * 'metadata
+    [@@deriving irmin]
+
+    type ('hash, 'step, 'metadata) t = ('hash, 'step, 'metadata) elt Seq.t
+
+    let t hash_t step_t metadata_t =
+      Type.map [%typ: (hash, step, metadata) elt list] List.to_seq List.of_seq
+  end
 end
 
 module type S = sig
@@ -356,6 +374,7 @@ module type S = sig
   module Proof : sig
     type tree
     type t = (hash, step, metadata) Proof.t [@@deriving irmin]
+    type stream = (hash, step, metadata) Proof.Stream.t [@@deriving irmin]
 
     val of_tree : tree -> t
     (** [of_tree t] is the proof representing the tree [t]. Shallow hashes will
@@ -403,17 +422,7 @@ module type S = sig
 end
 
 module type Tree = sig
-  module Proof : sig
-    type ('hash, 'step, 'metadata) t = ('hash, 'step, 'metadata) Proof.t =
-      | Blinded of 'hash
-      | Node of ('step * ('hash, 'step, 'metadata) t) list
-      | Inode of {
-          length : int;
-          proofs : (int * ('hash, 'step, 'metadata) t) list;
-        }
-      | Contents of 'hash * 'metadata
-    [@@deriving irmin]
-  end
+  module Proof = Proof
 
   module type S = sig
     include S
