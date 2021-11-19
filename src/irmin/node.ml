@@ -31,17 +31,15 @@ module No_metadata = struct
 end
 
 module Make
-    (K : Type.S) (P : sig
+    (K : Hash.S) (P : sig
       type step [@@deriving irmin]
     end)
     (M : METADATA) =
 struct
-  type hash = K.t [@@deriving irmin]
-  type step = P.step [@@deriving irmin]
-  type metadata = M.t [@@deriving irmin]
+  type hash = K.t [@@deriving irmin ~equal]
+  type step = P.step [@@deriving irmin ~equal]
+  type metadata = M.t [@@deriving irmin ~equal]
   type kind = [ `Node | `Contents of M.t ]
-
-  let equal_metadata = Type.(unstage (equal M.t))
 
   let kind_t =
     let open Type in
@@ -128,7 +126,18 @@ struct
   let entries e = List.rev_map (fun (_, e) -> e) (StepMap.bindings e)
   let t = Type.map Type.(list entry_t) of_entries entries
 
-  type nonrec proof = (hash, step, value) Proof.t [@@deriving irmin]
+  module Hash =
+    Hash.Typed
+      (K)
+      (struct
+        type nonrec t = t
+
+        let t = t
+      end)
+
+  let hash = Hash.hash
+
+  type proof = (hash, step, value) Proof.t [@@deriving irmin]
 
   let to_proof (t : t) : proof =
     let e = List.map of_entry (entries t) in
@@ -140,6 +149,29 @@ struct
     | Values e ->
         let e = List.map to_entry e in
         of_entries e
+
+  type stream = (hash, step, value) Proof.Stream.t [@@deriving irmin]
+  type stream_elt = (hash, step, value) Proof.Stream.elt [@@deriving irmin]
+
+  let to_stream (t : t) step : stream =
+    if not (StepMap.mem step t) then raise Proof.Stream.Bad_stream;
+    let e = List.map of_entry (entries t) in
+    Seq.singleton (Proof.Stream.Values e)
+
+  let of_stream_elt (s : stream_elt) (step, h) : t =
+    match s with
+    | Inode _ -> failwith "unsupported"
+    | Values e ->
+        let e = List.map to_entry e in
+        let t = of_entries e in
+        if not (StepMap.mem step t) then raise Proof.Stream.Bad_stream;
+        if not (equal_hash (hash t) h) then raise Proof.Stream.Bad_stream;
+        t
+
+  let of_stream (s : stream) h : t * stream =
+    match s () with
+    | Seq.Nil -> raise Proof.Stream.End_of_stream
+    | Seq.Cons (el, t) -> (of_stream_elt el h, t)
 end
 
 module Store
@@ -412,11 +444,17 @@ module V1 (N : S with type step = string) = struct
   type value = N.value
   type t = { n : N.t; entries : (step * value) list }
   type proof = N.proof [@@deriving irmin]
+  type stream = N.stream [@@deriving irmin]
 
   let import n = { n; entries = N.list n }
   let export t = t.n
   let to_proof t = N.to_proof t.n
   let of_proof p = import (N.of_proof p)
+  let to_stream t = N.to_stream (export t)
+
+  let of_stream h s =
+    let t, s = N.of_stream h s in
+    (import t, s)
 
   let of_seq entries =
     let n = N.of_seq entries in

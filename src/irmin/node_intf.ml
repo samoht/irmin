@@ -37,6 +37,31 @@ module Proof = struct
         |~ case1 "Inode" [%typ: int * (int * t) list] (fun (length, proofs) ->
                Inode { length; proofs })
         |> sealv)
+
+  module Stream = struct
+    type ('hash, 'step, 'value) elt =
+      | Values of ('step * 'value) list
+      | Inode of { length : int; proofs : (int * 'hash) list }
+
+    (* TODO(craigfe): fix [ppx_irmin] for recursive types with type parameters. *)
+    let elt_t hash_t step_t value_t =
+      let open Type in
+      variant "proof" (fun values inode -> function
+        | Values x1 -> values x1
+        | Inode { length; proofs } -> inode (length, proofs))
+      |~ case1 "Values" [%typ: (step * value) list] (fun x1 -> Values x1)
+      |~ case1 "Inode" [%typ: int * (int * hash) list] (fun (length, proofs) ->
+             Inode { length; proofs })
+      |> sealv
+
+    type ('hash, 'step, 'value) t = ('hash, 'step, 'value) elt Seq.t
+
+    let t hash_t step_t value_t =
+      Type.map [%typ: (hash, step, value) elt list] List.to_seq List.of_seq
+
+    exception End_of_stream
+    exception Bad_stream
+  end
 end
 
 module type S = sig
@@ -122,11 +147,17 @@ module type S = sig
 
   (** {1 Proofs} *)
 
-  type nonrec proof = (hash, step, value) Proof.t [@@deriving irmin]
+  type proof = (hash, step, value) Proof.t [@@deriving irmin]
   (** The type for proof trees. *)
 
   val to_proof : t -> proof
   val of_proof : proof -> t
+
+  type stream = (hash, step, value) Proof.Stream.t [@@deriving irmin]
+  (** The type for proof streams. *)
+
+  val to_stream : t -> step -> stream
+  val of_stream : stream -> step * hash -> t * stream
 end
 
 module type Maker = functor
@@ -262,16 +293,7 @@ module type GRAPH = sig
 end
 
 module type Node = sig
-  module Proof : sig
-    type ('hash, 'step, 'value) t = ('hash, 'step, 'value) Proof.t =
-      | Blinded of 'hash
-      | Values of ('step * 'value) list
-      | Inode of {
-          length : int;
-          proofs : (int * ('hash, 'step, 'value) t) list;
-        }
-    [@@deriving irmin]
-  end
+  module Proof = Proof
 
   module type S = S
   module type Maker = Maker

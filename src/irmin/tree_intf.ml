@@ -19,47 +19,64 @@ open! Import
 
 module Proof = struct
   type ('hash, 'step, 'metadata) t =
-    | Blinded of 'hash
+    | Blinded_node of 'hash
+    | Blinded_contents of 'hash * 'metadata
     | Node of ('step * ('hash, 'step, 'metadata) t) list
     | Inode of {
         length : int;
         proofs : (int * ('hash, 'step, 'metadata) t) list;
       }
-    | Contents of 'hash * 'metadata
 
   (* TODO(craigfe): fix [ppx_irmin] for inline parameters. *)
   let t hash_t step_t metadata_t =
     let open Type in
     mu (fun t ->
-        variant "proof" (fun blinded node inode contents -> function
-          | Blinded x1 -> blinded x1
+        variant "proof" (fun blinded_node node inode blinded_contents ->
+          function
+          | Blinded_node x1 -> blinded_node x1
           | Node x1 -> node x1
           | Inode { length; proofs } -> inode (length, proofs)
-          | Contents (x1, x2) -> contents (x1, x2))
-        |~ case1 "Blinded" hash_t (fun x1 -> Blinded x1)
+          | Blinded_contents (x1, x2) -> blinded_contents (x1, x2))
+        |~ case1 "Blinded_node" hash_t (fun x1 -> Blinded_node x1)
         |~ case1 "Node" [%typ: (step * t) list] (fun x1 -> Node x1)
         |~ case1 "Inode" [%typ: int * (int * t) list] (fun (length, proofs) ->
                Inode { length; proofs })
-        |~ case1 "Contents" [%typ: hash * metadata] (fun (x1, x2) ->
-               Contents (x1, x2))
+        |~ case1 "Blinded_contents" [%typ: hash * metadata] (fun (x1, x2) ->
+               Blinded_contents (x1, x2))
         |> Type.sealv)
 
   module Stream = struct
-    type 'hash inode = { length : int; proofs : (int * 'hash) list }
+    type ('hash, 'metadata) value =
+      [ `Node of 'hash | `Contents of 'hash * 'metadata ]
     [@@deriving irmin]
 
     type ('hash, 'step, 'metadata) elt =
-      | Empty
-      | Node of ('step * 'hash) list
-      | Inode of 'hash inode
-      | Leaf of 'hash
-      | Leaf_m of 'hash * 'metadata
-    [@@deriving irmin]
+      | Node of ('step * ('hash, 'metadata) value) list
+      | Inode of { length : int; proofs : (int * 'hash) list }
+      | Contents of 'hash * 'metadata
+
+    (* TODO(craigfe): fix [ppx_irmin] for inline parameters. *)
+    let elt_t hash_t step_t metadata_t =
+      let open Type in
+      variant "stream" (fun node inode contents -> function
+        | Node x1 -> node x1
+        | Inode { length; proofs } -> inode (length, proofs)
+        | Contents (h, m) -> contents (h, m))
+      |~ case1 "Node" [%typ: (step * (hash, metadata) value) list] (fun x1 ->
+             Node x1)
+      |~ case1 "Inode" [%typ: int * (int * hash) list] (fun (length, proofs) ->
+             Inode { length; proofs })
+      |~ case1 "Contents" [%typ: hash * metadata] (fun (h, m) ->
+             Contents (h, m))
+      |> Type.sealv
 
     type ('hash, 'step, 'metadata) t = ('hash, 'step, 'metadata) elt Seq.t
 
     let t hash_t step_t metadata_t =
       Type.map [%typ: (hash, step, metadata) elt list] List.to_seq List.of_seq
+
+    exception End_of_stream
+    exception Bad_stream
   end
 end
 
@@ -374,7 +391,6 @@ module type S = sig
   module Proof : sig
     type tree
     type t = (hash, step, metadata) Proof.t [@@deriving irmin]
-    type stream = (hash, step, metadata) Proof.Stream.t [@@deriving irmin]
 
     val of_tree : tree -> t
     (** [of_tree t] is the proof representing the tree [t]. Shallow hashes will
@@ -387,6 +403,13 @@ module type S = sig
     val of_keys : tree -> key list -> t Lwt.t
     (** [of_keys t keys] is the minimal proof that can be used to prove that
         operations over the domain [keys] are valid with [t]. *)
+
+    module Stream : sig
+      type t = (hash, step, metadata) Proof.Stream.t [@@deriving irmin]
+
+      val of_tree : tree -> t
+      val to_tree : t -> key list -> tree
+    end
   end
   with type tree := t
 
