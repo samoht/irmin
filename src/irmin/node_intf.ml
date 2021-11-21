@@ -110,7 +110,7 @@ module type S = sig
   type stream = (hash, step, metadata) Proof.Stream.t [@@deriving irmin]
   (** The type for proof streams. *)
 
-  val to_stream : t -> step -> stream
+  val to_stream : t -> stream
   val of_stream : stream -> step * hash -> t option * stream
 end
 

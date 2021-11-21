@@ -525,9 +525,13 @@ module Make (P : Private.S) = struct
 
     let rec hash : type a. cache:bool -> t -> (hash -> a) -> a =
      fun ~cache t k ->
+      Fmt.epr "XXX hash\n";
       match cached_hash t with
-      | Some h -> k h
+      | Some h ->
+          Fmt.epr "XXX hash 1\n";
+          k h
       | None -> (
+          Fmt.epr "XXX hash 2\n";
           let a_of_value v =
             cnt.node_hash <- cnt.node_hash + 1;
             let h = P.Node.Key.hash v in
@@ -546,7 +550,9 @@ module Make (P : Private.S) = struct
 
     and value_of_map : type r. cache:bool -> t -> map -> (value, r) cont =
      fun ~cache t map k ->
+      Fmt.epr "XXX value_of_map\n";
       if StepMap.is_empty map then (
+        Fmt.epr "XXX IS_EMPTY\n";
         t.info.value <- Some P.Node.Val.empty;
         k P.Node.Val.empty)
       else (
@@ -1875,12 +1881,30 @@ module Make (P : Private.S) = struct
 
     module Stream = struct
       type t = (P.Hash.t, Path.step, P.Node.Val.metadata) Proof.Stream.t
-      [@@deriving irmin]
+      [@@deriving irmin ~pp]
 
       type elt = (P.Hash.t, Path.step, P.Node.Val.metadata) Proof.Stream.elt
-      [@@deriving irmin]
+      [@@deriving irmin ~compare]
 
-      type node_stream = P.Node.Val.stream [@@deriving irmin]
+      module Elts = Set.Make (struct
+        type t = elt
+
+        let compare = compare_elt
+      end)
+
+      type acc = { stream : t; elts : Elts.t }
+
+      let snoc acc e =
+        if Elts.mem e acc.elts then acc
+        else { stream = Seq.snoc acc.stream e; elts = Elts.add e acc.elts }
+
+      let append acc s =
+        let rec aux acc s =
+          match s () with
+          | Seq.Nil -> acc
+          | Seq.Cons (e, s) -> aux (snoc acc e) s
+        in
+        aux acc s
 
       let to_value node =
         let value_of_hash ~cache:_ _node _repo h = Error (`Pruned_hash h) in
@@ -1893,38 +1917,57 @@ module Make (P : Private.S) = struct
           "Stream.of_node" node s
 
       let of_contents ~acc (c, m) =
-        Seq.snoc acc (Proof.Stream.Contents (Contents.hash c, m))
+        let e = Proof.Stream.Contents (Contents.hash c, m) in
+        snoc acc e
 
-      let stream_of_value v h = P.Node.Val.to_stream v h
+      let empty acc =
+        { stream = Seq.snoc acc.stream Proof.Stream.Empty; elts = acc.elts }
 
-      let rec of_tree : acc:t -> tree -> key -> t =
+      let stream_of_value ~acc v = append acc (P.Node.Val.to_stream v)
+
+      let stream_of_step ~acc v s =
+        match P.Node.Val.find v s with
+        | None -> empty acc
+        | Some _ -> stream_of_value ~acc v
+
+      let rec of_tree : acc:acc -> tree -> key -> acc =
        fun ~acc tree key ->
         Fmt.epr "XXX of_tree\n%!";
         match tree with
         | `Node node -> of_node ~acc node key
-        | `Contents c -> of_contents ~acc c
+        | `Contents c ->
+            if Path.is_empty key then of_contents ~acc c else empty acc
 
-      and of_node : acc:t -> node -> key -> t =
+      and of_node : acc:acc -> node -> key -> acc =
        fun ~acc node key ->
-        Fmt.epr "XXX of_node %a\n%!" pp_path key;
+        Fmt.epr "XXX of_node %a %a\n%!" pp acc.stream pp_path key;
         match to_value node with
-        | Error (`Dangling_hash _) -> Proof.bad_stream_exn ()
-        | Error (`Pruned_hash _) -> Proof.bad_stream_exn ()
+        | Error (`Dangling_hash _) ->
+            Fmt.epr "XXX A1\n";
+            Proof.bad_stream_exn ()
+        | Error (`Pruned_hash _) ->
+            Fmt.epr "XXX A2\n";
+            Proof.bad_stream_exn ()
         | Ok v -> (
             match Path.decons key with
-            | None -> assert false
+            | None ->
+                Fmt.epr "XXX A3\n";
+                stream_of_value ~acc v
             | Some (h, t) -> (
-                let str = stream_of_value v h in
-                let acc = Seq.append acc str in
+                let acc = stream_of_step ~acc v h in
+                Fmt.epr "XXX A4\n";
                 match findv node h with
                 | None -> acc
                 | Some (`Node node) -> of_node ~acc node t
                 | Some (`Contents c) ->
-                    if Path.is_empty t then of_contents ~acc c
-                    else Proof.bad_stream_exn ()))
+                    if Path.is_empty t then of_contents ~acc c else empty acc))
 
       let of_tree tree keys =
-        List.fold_left (fun acc key -> of_tree ~acc tree key) Seq.empty keys
+        let acc = { elts = Elts.empty; stream = Seq.empty } in
+        let acc =
+          List.fold_left (fun acc key -> of_tree ~acc tree key) acc keys
+        in
+        acc.stream
 
       let consume_step : t -> node -> step -> tree option * t =
        fun str node step ->
@@ -1932,7 +1975,10 @@ module Make (P : Private.S) = struct
         match findv node step with
         | Some n -> (Some n, str)
         | None -> (
+            (* FIXME: here [node] is empty *)
             let hash = Node.hash node ~cache:true in
+            let pp_node = Type.pp Node.t in
+            Fmt.epr "XXX OOOO %a %a\n" pp_hash hash pp_node node;
             let v, str = P.Node.Val.of_stream str (step, hash) in
             match v with
             | None -> (None, str)
@@ -1968,11 +2014,10 @@ module Make (P : Private.S) = struct
             let tree, str = consume_step str node step in
             match tree with None -> str | Some tree -> consume str tree key)
 
-      let pp = Type.pp t
-
       let to_tree str keys =
         Fmt.epr "XXX Proof.Stream.to_tree %a\n" pp str;
-        let node = Node.empty in
+        (* we cannot re-use [Node.empty] here as we aim to modify the caches. *)
+        let node = Node.of_value None P.Node.Val.empty in
         let tree = `Node node in
         let str =
           List.fold_left (fun str key -> consume str tree key) str keys

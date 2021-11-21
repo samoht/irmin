@@ -158,6 +158,7 @@ module Private : sig
   module Slice = Slice
   module Sync = Sync
   module Sigs = S
+  module Proof = Proof
 
   module type S = Private.S
   (** The complete collection of private implementations. *)

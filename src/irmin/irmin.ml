@@ -393,6 +393,7 @@ module Private = struct
   module Slice = Slice
   module Sync = Sync
   module Sigs = S
+  module Proof = Proof
 
   module type S = Private.S
 

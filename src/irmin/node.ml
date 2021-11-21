@@ -122,8 +122,8 @@ struct
     |~ case1 "contents-x" (pair K.t M.t) (fun (h, m) -> `Contents (h, m))
     |> sealv
 
-  let of_entries e = of_list (List.rev_map of_entry e)
-  let entries e = List.rev_map (fun (_, e) -> e) (StepMap.bindings e)
+  let of_entries e = List.to_seq e |> Seq.map of_entry |> of_seq
+  let entries e = StepMap.to_seq e |> Seq.map snd |> List.of_seq
   let t = Type.map Type.(list entry_t) of_entries entries
 
   module Hash =
@@ -171,11 +171,12 @@ struct
   type stream = (hash, step, metadata) Proof.Stream.t [@@deriving irmin]
   type stream_elt = (hash, step, metadata) Proof.Stream.elt [@@deriving irmin]
 
-  let to_stream (t : t) step : stream =
-    if not (StepMap.mem step t) then Seq.singleton Proof.Stream.Empty
-    else
-      let e = List.map of_entry (entries t) in
-      Seq.singleton (Proof.Stream.Node e)
+  let to_stream (t : t) : stream =
+    let e = List.map of_entry (entries t) in
+    Seq.singleton (Proof.Stream.Node e)
+
+  let pp_hash = Type.pp Hash.t
+  let pp = Type.pp t
 
   let of_stream_elt (s : stream_elt) (step, h) : t option =
     match s with
@@ -184,6 +185,8 @@ struct
     | Node e ->
         let e = List.map to_entry e in
         let t = of_entries e in
+        Fmt.epr "UUU %a %a\n" pp t pp_hash (hash t);
+        Fmt.epr "UUU %a\n" pp_hash h;
         if not (StepMap.mem step t) then Proof.bad_stream_exn ();
         if not (equal_hash (hash t) h) then Proof.bad_stream_exn ();
         Some t
