@@ -1313,6 +1313,32 @@ module Make (S : S) = struct
         check_ls "proof tree list /dir" c0' t0'
       in
 
+      (* Testing Merkle traces *)
+      let test tree keys =
+        Fmt.epr "XXX %a\n" Fmt.(Dump.list pp_key) keys;
+        let s = S.Tree.Proof.Stream.of_tree tree keys in
+        let tree' = S.Tree.Proof.Stream.to_tree s keys in
+        let pp_tree = Irmin.Type.pp S.tree_t in
+        let msg =
+          Fmt.str "convert traces %a %a" pp_tree tree
+            Fmt.(Dump.list pp_key)
+            keys
+        in
+        check S.tree_t msg tree tree'
+      in
+      test S.Tree.empty [];
+      test S.Tree.empty [ [ "a" ] ];
+      let* c0 =
+        Lwt.return S.Tree.empty
+        >>= with_binding [ "foo"; "a" ] "1"
+        >>= with_binding [ "foo"; "b"; "c" ] "2"
+        >>= with_binding [ "bar"; "d" ] "3"
+        >>= with_binding [ "e" ] "4"
+      in
+      test c0 [ [ "foo" ]; [ "bar"; "d"; "x" ] ];
+      test c0 [ [ "foo" ]; [ "bar" ] ];
+      test c0 [ [ "foo"; "a"; "1" ]; [ "bar"; "d" ] ];
+
       (* Testing other tree operations. *)
       S.Tree.empty |> fun v0 ->
       let* c = S.Tree.to_concrete v0 in

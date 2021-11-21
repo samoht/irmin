@@ -137,40 +137,60 @@ struct
 
   let hash = Hash.hash
 
-  type proof = (hash, step, value) Proof.t [@@deriving irmin]
+  type proof = (hash, step, metadata) Proof.t [@@deriving irmin]
+
+  let proof_of_entry (e : entry) : step * proof =
+    let p =
+      match e.kind with
+      | `Contents m -> Proof.Blinded_contents (e.node, m)
+      | `Node -> Proof.Blinded_node e.node
+    in
+    (e.name, p)
+
+  let entry_of_proof (name, p) : step * entry =
+    let kind, node =
+      match p with
+      | Proof.Blinded_contents (h, m) -> (`Contents m, h)
+      | Proof.Blinded_node h -> (`Node, h)
+      | _ -> Proof.bad_proof_exn ()
+    in
+    (name, { name; kind; node })
+
+  let of_proof_entries e : t =
+    List.to_seq e |> Seq.map entry_of_proof |> StepMap.of_seq
 
   let to_proof (t : t) : proof =
-    let e = List.map of_entry (entries t) in
-    Values e
+    let e = List.map proof_of_entry (entries t) in
+    Proof.Node e
 
   let of_proof (t : proof) =
     match t with
-    | Blinded _ | Inode _ -> failwith "unsupported"
-    | Values e ->
-        let e = List.map to_entry e in
-        of_entries e
+    | Blinded_contents _ | Blinded_node _ | Inode _ -> Proof.bad_proof_exn ()
+    | Node e -> of_proof_entries e
 
-  type stream = (hash, step, value) Proof.Stream.t [@@deriving irmin]
-  type stream_elt = (hash, step, value) Proof.Stream.elt [@@deriving irmin]
+  type stream = (hash, step, metadata) Proof.Stream.t [@@deriving irmin]
+  type stream_elt = (hash, step, metadata) Proof.Stream.elt [@@deriving irmin]
 
   let to_stream (t : t) step : stream =
-    if not (StepMap.mem step t) then raise Proof.Stream.Bad_stream;
-    let e = List.map of_entry (entries t) in
-    Seq.singleton (Proof.Stream.Values e)
+    if not (StepMap.mem step t) then Seq.singleton Proof.Stream.Empty
+    else
+      let e = List.map of_entry (entries t) in
+      Seq.singleton (Proof.Stream.Node e)
 
-  let of_stream_elt (s : stream_elt) (step, h) : t =
+  let of_stream_elt (s : stream_elt) (step, h) : t option =
     match s with
-    | Inode _ -> failwith "unsupported"
-    | Values e ->
+    | Contents _ | Inode _ -> Proof.bad_stream_exn ()
+    | Empty -> None
+    | Node e ->
         let e = List.map to_entry e in
         let t = of_entries e in
-        if not (StepMap.mem step t) then raise Proof.Stream.Bad_stream;
-        if not (equal_hash (hash t) h) then raise Proof.Stream.Bad_stream;
-        t
+        if not (StepMap.mem step t) then Proof.bad_stream_exn ();
+        if not (equal_hash (hash t) h) then Proof.bad_stream_exn ();
+        Some t
 
-  let of_stream (s : stream) h : t * stream =
+  let of_stream (s : stream) h : t option * stream =
     match s () with
-    | Seq.Nil -> raise Proof.Stream.End_of_stream
+    | Seq.Nil -> Proof.end_of_stream_exn ()
     | Seq.Cons (el, t) -> (of_stream_elt el h, t)
 end
 
@@ -454,7 +474,7 @@ module V1 (N : S with type step = string) = struct
 
   let of_stream h s =
     let t, s = N.of_stream h s in
-    (import t, s)
+    (Option.map import t, s)
 
   let of_seq entries =
     let n = N.of_seq entries in

@@ -1760,66 +1760,60 @@ module Make (P : Private.S) = struct
 
   module Proof = struct
     type tree = t
-    type node_proof = P.Node.Val.proof
-    type t = (P.Hash.t, Path.step, Metadata.t) Proof.t [@@deriving irmin]
+    type t = P.Node.Val.proof [@@deriving irmin]
 
     (** The type of tree proofs. *)
+
+    let value_of_hash ~cache:_ _node _repo h = Error (`Pruned_hash h)
+
+    let to_value node =
+      Node.to_value_aux ~cache:false ~value_of_hash ~return:Fun.id node
+
+    let findv node =
+      Node.findv_aux ~value_of_hash ~return:Fun.id
+        ~bind:(fun x f -> f x)
+        ~cache:false "Proof.of_tree" node
 
     let rec of_tree : tree -> t = function
       | `Contents (c, h) -> Blinded_contents (Contents.hash c, h)
       | `Node node -> of_node node
 
     and of_node node : t =
-      match
-        let value_of_hash ~cache:_ _node _repo h = Error (`Pruned_hash h) in
-        Node.to_value_aux ~cache:false ~value_of_hash ~return:Fun.id node
-      with
+      match to_value node with
       | Error (`Dangling_hash h) -> Blinded_node h
       | Error (`Pruned_hash h) -> Blinded_node h
-      | Ok v -> of_node_proof node (P.Node.Val.to_proof v)
+      | Ok v -> expand node (P.Node.Val.to_proof v)
 
-    (** [of_node_proof n np] is [p] (of type [Tree.Proof.t]) which is very
-        similar to [np] (of type [P.Node.Val.proof]) except that the values
-        loaded in [n] have been expanded.
+    (** [expand n np] is [p] (of type [Proof.t]) which is very similar to [np]
+        except that the values loaded in [n] have been expanded. *)
+    and expand node : t -> t = function
+      | (Blinded_node _ | Blinded_contents _) as t -> t
+      | Inode { length; proofs } -> expand_inode node length proofs
+      | Node vs -> expand_steps node vs
 
-        If [np] is of tag [Inode], [of_node_proof] will be called recursively
-        for each of the proofs [np'] in [p.proofs], using [n] again (i.e.
-        [of_node_proof n np']).
-
-        If [np] is of tag [Values], the proofs contained in it will be ignored
-        and instead be recomputed one value at a time, using the tag [Blinded]
-        for the values non-loaded in [n], and some other tag for the values
-        loaded in [n]. *)
-    and of_node_proof node : node_proof -> t = function
-      | Blinded h -> Blinded_node h
-      | Inode { length; proofs } -> of_inode node length proofs
-      | Values vs -> proof_of_values node vs
-
-    and of_inode node length proofs : t =
+    and expand_inode node length proofs : t =
       let proofs =
         List.map
           (fun (index, proof) ->
-            let proof = of_node_proof node proof in
+            let proof = expand node proof in
             (index, proof))
           proofs
       in
       Inode { length; proofs }
 
-    and proof_of_values node steps : t =
-      let findv =
-        let value_of_hash ~cache:_ _node _repo h = Error (`Pruned_hash h) in
-        Node.findv_aux ~value_of_hash ~return:Fun.id
-          ~bind:(fun x f -> f x)
-          ~cache:false "to_proof" node
-      in
-      List.fold_left
-        (fun acc (step, _) ->
-          match findv step with
-          | None -> assert false
-          | Some t ->
-              let p = of_tree t in
-              (step, p) :: acc)
-        [] steps
+    and expand_steps node steps : t =
+      let findv = findv node in
+      List.rev_map
+        (fun (step, p) ->
+          match p with
+          | Proof.Blinded_node _ -> (
+              match findv step with
+              | None -> assert false
+              | Some t ->
+                  let p = of_tree t in
+                  (step, p))
+          | p -> (step, p))
+        steps
       |> fun steps -> Proof.Node (List.rev steps)
 
     let proof_steps acc p =
@@ -1830,13 +1824,6 @@ module Make (P : Private.S) = struct
         | Node vs -> vs @ acc
       in
       aux acc p
-
-    let hash_of_node_proof (p : node_proof) =
-      match p with
-      | Blinded h -> h
-      | _ ->
-          let v = P.Node.Val.of_proof p in
-          P.Node.Key.hash v
 
     let rec to_tree (p : t) : tree =
       match p with
@@ -1871,36 +1858,12 @@ module Make (P : Private.S) = struct
         else
           (* We have a partial proof, build a [node_proof] and then a private
              node from it. *)
-          let p = List.map (fun (i, p) -> (i, to_node_proof p)) proofs in
-          let p = Irmin_node.Proof.Inode { length = len; proofs = p } in
+          let p = Proof.Inode { length = len; proofs } in
           let n = P.Node.Val.of_proof p in
           Node.of_value None n
       in
       List.iter (fun (s, elt) -> Node.add_to_findv_cache n s elt) elts;
       `Node n
-
-    and to_node_proof : t -> node_proof = function
-      | Blinded_contents (h, _) -> Blinded h (* FIXME: should we fail here? *)
-      | Blinded_node x -> Blinded x
-      | Inode { length; proofs } -> node_proof_of_inode length proofs
-      | Node n -> node_proof_of_node n
-
-    and node_proof_of_inode length proofs : node_proof =
-      Inode
-        {
-          length;
-          proofs = List.map (fun (i, p) -> (i, to_node_proof p)) proofs;
-        }
-
-    and node_proof_of_node n : node_proof =
-      Values (List.map (fun (s, n) -> (s, node_value_of_proof n)) n)
-
-    and node_value_of_proof : t -> P.Node.Val.value = function
-      | Blinded_contents (c, m) -> `Contents (c, m)
-      | t ->
-          let p = to_node_proof t in
-          let h = hash_of_node_proof p in
-          `Node h
 
     let of_keys tree keys =
       (* The following [clear] gets rid of existing backend values stored in
@@ -1914,10 +1877,10 @@ module Make (P : Private.S) = struct
       type t = (P.Hash.t, Path.step, P.Node.Val.metadata) Proof.Stream.t
       [@@deriving irmin]
 
-      type node_stream = P.Node.Val.stream [@@deriving irmin]
+      type elt = (P.Hash.t, Path.step, P.Node.Val.metadata) Proof.Stream.elt
+      [@@deriving irmin]
 
-      let bad_stream_exn () = raise Proof.Stream.Bad_stream
-      let end_of_stream_exn () = raise Proof.Stream.End_of_stream
+      type node_stream = P.Node.Val.stream [@@deriving irmin]
 
       let to_value node =
         let value_of_hash ~cache:_ _node _repo h = Error (`Pruned_hash h) in
@@ -1932,50 +1895,93 @@ module Make (P : Private.S) = struct
       let of_contents ~acc (c, m) =
         Seq.snoc acc (Proof.Stream.Contents (Contents.hash c, m))
 
+      let stream_of_value v h = P.Node.Val.to_stream v h
+
       let rec of_tree : acc:t -> tree -> key -> t =
        fun ~acc tree key ->
+        Fmt.epr "XXX of_tree\n%!";
         match tree with
         | `Node node -> of_node ~acc node key
         | `Contents c -> of_contents ~acc c
 
       and of_node : acc:t -> node -> key -> t =
        fun ~acc node key ->
+        Fmt.epr "XXX of_node %a\n%!" pp_path key;
         match to_value node with
-        | Error (`Dangling_hash _) -> bad_stream_exn ()
-        | Error (`Pruned_hash _) -> bad_stream_exn ()
+        | Error (`Dangling_hash _) -> Proof.bad_stream_exn ()
+        | Error (`Pruned_hash _) -> Proof.bad_stream_exn ()
         | Ok v -> (
             match Path.decons key with
-            | None -> bad_stream_exn ()
+            | None -> assert false
             | Some (h, t) -> (
-                let str =
-                  P.Node.Val.to_stream v h
-                  |> Seq.map (function
-                       | Irmin_node.Proof.Stream.Values x -> Proof.Stream.Node x
-                       | Inode { length; proofs } -> Inode { length; proofs })
-                in
+                let str = stream_of_value v h in
                 let acc = Seq.append acc str in
                 match findv node h with
-                | None -> assert false (* because of [P.Node.Val.to_stream]  *)
+                | None -> acc
                 | Some (`Node node) -> of_node ~acc node t
                 | Some (`Contents c) ->
                     if Path.is_empty t then of_contents ~acc c
-                    else bad_stream_exn ()))
+                    else Proof.bad_stream_exn ()))
 
-      let of_tree = of_tree ~acc:Seq.empty
+      let of_tree tree keys =
+        List.fold_left (fun acc key -> of_tree ~acc tree key) Seq.empty keys
 
-      let to_tree : acc:tree -> t -> key -> tree =
-       fun ~acc str key ->
+      let consume_step : t -> node -> step -> tree option * t =
+       fun str node step ->
+        Fmt.epr "XXX consume step\n";
+        match findv node step with
+        | Some n -> (Some n, str)
+        | None -> (
+            let hash = Node.hash node ~cache:true in
+            let v, str = P.Node.Val.of_stream str (step, hash) in
+            match v with
+            | None -> (None, str)
+            | Some v ->
+                let tree = `Node (Node.of_value None v) in
+                Node.add_to_findv_cache node step tree;
+                (Some tree, str))
+
+      let consume_contents str (h, m) =
+        Fmt.epr "XXX consume contents\n";
         match str () with
-        | Seq.Nil -> end_of_stream_exn ()
-        | Seq.Cons (h, t) -> (
-            match h with
-            | Proof.Stream.Node n ->
-                let v = P.Node.Val.of_stream (Values n) in
-                assert false
-            | Proof.Stream.Inode { length; proofs } ->
-                let v = P.Node.Val.of_stream (Inode { length; proof }) in
-                assert false
-            | Proof.Stream.Contents (c, m) -> `Contents (Contents.of_hash c, n))
+        | Seq.Nil -> Proof.end_of_stream_exn ()
+        | Seq.Cons (Proof.Stream.Contents (h', m'), str) ->
+            if equal_hash (Contents.hash h) h' && equal_metadata m m' then str
+            else Proof.bad_proof_exn ()
+        | _ -> Proof.bad_stream_exn ()
+
+      let consume_empty str =
+        Fmt.epr "XXX consume empty\n";
+        match str () with
+        | Seq.Nil -> Proof.end_of_stream_exn ()
+        | Seq.Cons (Proof.Stream.Empty, str) -> str
+        | _ -> Proof.bad_proof_exn ()
+
+      let rec consume : t -> tree -> key -> t =
+       fun str tree key ->
+        Fmt.epr "XXX consume\n";
+        match (Path.decons key, tree) with
+        | None, `Contents c -> consume_contents str c
+        | None, `Node _ -> consume_empty str
+        | Some _, `Contents _ -> consume_empty str
+        | Some (step, key), `Node node -> (
+            let tree, str = consume_step str node step in
+            match tree with None -> str | Some tree -> consume str tree key)
+
+      let pp = Type.pp t
+
+      let to_tree str keys =
+        Fmt.epr "XXX Proof.Stream.to_tree %a\n" pp str;
+        let node = Node.empty in
+        let tree = `Node node in
+        let str =
+          List.fold_left (fun str key -> consume str tree key) str keys
+        in
+        match str () with
+        | Seq.Nil -> tree
+        | Seq.Cons _ ->
+            Fmt.epr "XXX to_tree %d\n" (List.length (List.of_seq str));
+            Proof.bad_stream_exn ()
     end
   end
 end

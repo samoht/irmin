@@ -17,69 +17,6 @@
 
 open! Import
 
-module Proof = struct
-  type ('hash, 'step, 'metadata) t =
-    | Blinded_node of 'hash
-    | Blinded_contents of 'hash * 'metadata
-    | Node of ('step * ('hash, 'step, 'metadata) t) list
-    | Inode of {
-        length : int;
-        proofs : (int * ('hash, 'step, 'metadata) t) list;
-      }
-
-  (* TODO(craigfe): fix [ppx_irmin] for inline parameters. *)
-  let t hash_t step_t metadata_t =
-    let open Type in
-    mu (fun t ->
-        variant "proof" (fun blinded_node node inode blinded_contents ->
-          function
-          | Blinded_node x1 -> blinded_node x1
-          | Node x1 -> node x1
-          | Inode { length; proofs } -> inode (length, proofs)
-          | Blinded_contents (x1, x2) -> blinded_contents (x1, x2))
-        |~ case1 "Blinded_node" hash_t (fun x1 -> Blinded_node x1)
-        |~ case1 "Node" [%typ: (step * t) list] (fun x1 -> Node x1)
-        |~ case1 "Inode" [%typ: int * (int * t) list] (fun (length, proofs) ->
-               Inode { length; proofs })
-        |~ case1 "Blinded_contents" [%typ: hash * metadata] (fun (x1, x2) ->
-               Blinded_contents (x1, x2))
-        |> Type.sealv)
-
-  module Stream = struct
-    type ('hash, 'metadata) value =
-      [ `Node of 'hash | `Contents of 'hash * 'metadata ]
-    [@@deriving irmin]
-
-    type ('hash, 'step, 'metadata) elt =
-      | Node of ('step * ('hash, 'metadata) value) list
-      | Inode of { length : int; proofs : (int * 'hash) list }
-      | Contents of 'hash * 'metadata
-
-    (* TODO(craigfe): fix [ppx_irmin] for inline parameters. *)
-    let elt_t hash_t step_t metadata_t =
-      let open Type in
-      variant "stream" (fun node inode contents -> function
-        | Node x1 -> node x1
-        | Inode { length; proofs } -> inode (length, proofs)
-        | Contents (h, m) -> contents (h, m))
-      |~ case1 "Node" [%typ: (step * (hash, metadata) value) list] (fun x1 ->
-             Node x1)
-      |~ case1 "Inode" [%typ: int * (int * hash) list] (fun (length, proofs) ->
-             Inode { length; proofs })
-      |~ case1 "Contents" [%typ: hash * metadata] (fun (h, m) ->
-             Contents (h, m))
-      |> Type.sealv
-
-    type ('hash, 'step, 'metadata) t = ('hash, 'step, 'metadata) elt Seq.t
-
-    let t hash_t step_t metadata_t =
-      Type.map [%typ: (hash, step, metadata) elt list] List.to_seq List.of_seq
-
-    exception End_of_stream
-    exception Bad_stream
-  end
-end
-
 module type S = sig
   type key
   type step
@@ -407,7 +344,7 @@ module type S = sig
     module Stream : sig
       type t = (hash, step, metadata) Proof.Stream.t [@@deriving irmin]
 
-      val of_tree : tree -> t
+      val of_tree : tree -> key list -> t
       val to_tree : t -> key list -> tree
     end
   end
@@ -445,8 +382,6 @@ module type S = sig
 end
 
 module type Tree = sig
-  module Proof = Proof
-
   module type S = sig
     include S
     (** @inline *)
