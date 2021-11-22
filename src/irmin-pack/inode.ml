@@ -39,7 +39,7 @@ struct
   module T = struct
     type hash = H.t [@@deriving irmin]
     type step = Node.step [@@deriving irmin]
-    type metadata = Node.metadata [@@deriving irmin]
+    type metadata = Node.metadata [@@deriving irmin ~equal]
 
     let default = Node.default
 
@@ -959,13 +959,13 @@ struct
       | None -> stabilize layout t
       | Some _ -> remove layout ~depth:0 t s Fun.id |> stabilize layout
 
-    let of_seq l =
+    let of_seq_aux la l =
       let t =
         let rec aux_big seq inode =
           match seq () with
           | Seq.Nil -> inode
           | Seq.Cons ((s, v), rest) ->
-              aux_big rest (add Total ~copy:false inode s v)
+              aux_big rest (add la ~copy:false inode s v)
         in
         let len =
           (* [StepMap.cardinal] is (a bit) expensive to compute, let's track the
@@ -976,7 +976,7 @@ struct
           match seq () with
           | Seq.Nil ->
               assert (!len <= Conf.entries);
-              values Total map
+              values la map
           | Seq.Cons ((s, v), rest) ->
               let map =
                 StepMap.update s
@@ -987,12 +987,14 @@ struct
                     | Some _ -> Some v)
                   map
               in
-              if !len = Conf.entries then aux_big rest (values Total map)
+              if !len = Conf.entries then aux_big rest (values la map)
               else aux_small rest map
         in
         aux_small l StepMap.empty
       in
-      stabilize Total t
+      stabilize la t
+
+    let of_seq l = of_seq_aux Total l
 
     let save layout ~add ~mem t =
       let clear =
@@ -1075,78 +1077,148 @@ struct
 
     let is_tree t = match t.v with Tree _ -> true | Values _ -> false
 
-    type proof = (hash, step, value) Irmin.Private.Node.Proof.t
-    [@@deriving irmin]
+    (** Proofs *)
+
+    type proof = (hash, step, metadata) Irmin.Private.Proof.t [@@deriving irmin]
+
+    let bad_proof_exn () = Irmin.Private.Proof.bad_proof_exn ()
+
+    let proof_of_entry (e : Concrete.entry) : step * proof =
+      let p : proof =
+        match e.kind with
+        | Contents -> Blinded_contents (e.hash, Node.default)
+        | Contents_x m -> Blinded_contents (e.hash, m)
+        | Node -> Blinded_node e.hash
+      in
+      (e.name, p)
+
+    let entry_of_proof (name, p) : Concrete.entry =
+      let kind, hash =
+        match (p : proof) with
+        | Blinded_contents (h, m) ->
+            if equal_metadata m Node.default then (Concrete.Contents, h)
+            else (Contents_x m, h)
+        | Blinded_node h -> (Node, h)
+        | _ -> bad_proof_exn ()
+      in
+      { name; kind; hash }
+
+    let value_of_proof (name, p) : step * value =
+      let v =
+        match (p : proof) with
+        | Blinded_contents (h, m) -> `Contents (h, m)
+        | Blinded_node h -> `Node h
+        | _ -> bad_proof_exn ()
+      in
+      (name, v)
+
+    let values_of_proof l =
+      List.to_seq l |> Seq.map value_of_proof |> StepMap.of_seq
+
+    let rec proof_of_concrete h : Concrete.t -> proof = function
+      | Blinded -> Blinded_node (Lazy.force h)
+      | Values vs -> Node (List.map proof_of_entry vs)
+      | Tree tr ->
+          let proofs =
+            List.fold_left
+              (fun acc (e : _ Concrete.pointer) ->
+                let p = proof_of_concrete (lazy e.pointer) e.tree in
+                let e = (e.index, p) in
+                e :: acc)
+              [] (List.rev tr.pointers)
+          in
+          Inode { length = tr.length; proofs }
+
+    let hash_v v = Bin.V.hash (to_bin_v Truncated v)
+
+    let rec hash_of_proof : int -> proof -> hash =
+     fun depth -> function
+      | Node l -> hash_v (Values (values_of_proof l))
+      | Inode { length; proofs } ->
+          let es =
+            List.fold_left
+              (fun acc (index, proof) ->
+                let pointer = hash_of_proof (depth + 1) proof in
+                (index, Broken pointer) :: acc)
+              [] proofs
+          in
+          let entries = Array.make Conf.entries None in
+          List.iter (fun (index, ptr) -> entries.(index) <- Some ptr) es;
+          let v : truncated_ptr v = Tree { depth; length; entries } in
+          hash_v v
+      | Blinded_node h -> h
+      | Blinded_contents (h, _) -> h
+
+    let rec concrete_of_proof depth : proof -> Concrete.t = function
+      | Blinded_node _ -> Blinded
+      | Blinded_contents _ -> Blinded
+      | Node vs -> Values (List.map entry_of_proof vs)
+      | Inode { length; proofs } ->
+          let pointers =
+            List.fold_left
+              (fun acc (index, proof) ->
+                let tree = concrete_of_proof (depth + 1) proof in
+                let pointer = hash_of_proof (depth + 1) proof in
+                { Concrete.tree; pointer; index } :: acc)
+              [] (List.rev proofs)
+          in
+          Concrete.Tree { depth; length; pointers }
+
+    let to_proof la t =
+      let p =
+        if t.stable then
+          (* To preserve the stable hash, the proof needs to contain
+             all the underlying values. *)
+          let bindings =
+            seq la t
+            |> Seq.map Concrete.to_entry
+            |> List.of_seq
+            |> List.fast_sort (fun x y ->
+                   compare x.Concrete.name y.Concrete.name)
+          in
+          Concrete.Values bindings
+        else to_concrete ~force:false la t
+      in
+      proof_of_concrete t.hash p
+
+    let of_proof (proof : proof) =
+      let c = concrete_of_proof 0 proof in
+      of_concrete_exn c
+
+    (** Streams *)
+
+    module Stream = Irmin.Private.Proof.Stream
+
+    type stream = (hash, step, metadata) Stream.t [@@deriving irmin]
+
+    let bad_stream_exn s =
+      Irmin.Private.Proof.bad_stream_exn ("Irmin_pack.Inode." ^ s)
+
+    let to_stream la t : stream =
+      let s =
+        if t.stable then
+          (* To preserve the stable hash, the proof needs to contain
+             a  ll the underlying values. *)
+          let bindings =
+            seq la t
+            |> List.of_seq
+            |> List.fast_sort (fun (x, _) (y, _) -> compare x y)
+          in
+          Seq.singleton (Stream.Node bindings)
+        else failwith "TODO"
+      in
+      s
+
+    let of_stream (s : stream) =
+      match s () with
+      | Seq.Nil -> bad_stream_exn "of_stream/1"
+      | Seq.Cons (Empty, str) -> (None, str)
+      | Seq.Cons (Node bindings, str) ->
+          let n = of_seq_aux Truncated (List.to_seq bindings) in
+          (Some n, str)
+      | _ -> failwith "TODO"
 
     module Proof = struct
-      let rec proof_of_concrete h : Concrete.t -> proof = function
-        | Blinded -> Blinded (Lazy.force h)
-        | Values vs -> Values (List.map Concrete.of_entry vs)
-        | Tree tr ->
-            let proofs =
-              List.fold_left
-                (fun acc (e : _ Concrete.pointer) ->
-                  let p = proof_of_concrete (lazy e.pointer) e.tree in
-                  let e = (e.index, p) in
-                  e :: acc)
-                [] (List.rev tr.pointers)
-            in
-            Inode { length = tr.length; proofs }
-
-      let hash_v v = Bin.V.hash (to_bin_v Truncated v)
-
-      let rec hash : int -> proof -> hash =
-       fun depth -> function
-        | Values l -> hash_v (Values (StepMap.of_list l))
-        | Inode { length; proofs } ->
-            let es =
-              List.fold_left
-                (fun acc (index, proof) ->
-                  let pointer = hash (depth + 1) proof in
-                  (index, Broken pointer) :: acc)
-                [] proofs
-            in
-            let entries = Array.make Conf.entries None in
-            List.iter (fun (index, ptr) -> entries.(index) <- Some ptr) es;
-            let v : truncated_ptr v = Tree { depth; length; entries } in
-            hash_v v
-        | Blinded h -> h
-
-      let rec concrete_of_proof depth : proof -> Concrete.t = function
-        | Blinded _ -> Concrete.Blinded
-        | Values vs -> Concrete.Values (List.map Concrete.to_entry vs)
-        | Inode { length; proofs } ->
-            let pointers =
-              List.fold_left
-                (fun acc (index, proof) ->
-                  let tree = concrete_of_proof (depth + 1) proof in
-                  let pointer = hash (depth + 1) proof in
-                  { Concrete.tree; pointer; index } :: acc)
-                [] (List.rev proofs)
-            in
-            Concrete.Tree { depth; length; pointers }
-
-      let to_proof la t =
-        let p =
-          if t.stable then
-            (* To preserve the stable hash, the proof needs to contain
-               all the underlying values. *)
-            let bindings =
-              seq la t
-              |> Seq.map Concrete.to_entry
-              |> List.of_seq
-              |> List.fast_sort (fun x y ->
-                     compare x.Concrete.name y.Concrete.name)
-            in
-            Concrete.Values bindings
-          else to_concrete ~force:false la t
-        in
-        proof_of_concrete t.hash p
-
-      let of_proof (proof : proof) =
-        let c = concrete_of_proof 0 proof in
-        of_concrete_exn c
-
       let of_concrete t = proof_of_concrete (lazy (failwith "blinded root")) t
       let to_concrete = concrete_of_proof 0
     end
@@ -1386,10 +1458,17 @@ struct
 
     type proof = I.proof [@@deriving irmin]
 
-    let to_proof (t : t) : proof =
-      apply t { f = (fun la v -> I.Proof.to_proof la v) }
+    let to_proof (t : t) : proof = apply t { f = (fun la v -> I.to_proof la v) }
+    let of_proof (p : proof) = Truncated (I.of_proof p)
 
-    let of_proof (p : proof) = Truncated (I.Proof.of_proof p)
+    type stream = I.stream [@@deriving irmin]
+
+    let to_stream (t : t) : stream =
+      apply t { f = (fun la v -> I.to_stream la v) }
+
+    let of_stream (s : stream) =
+      let v, str = I.of_stream s in
+      match v with None -> (None, str) | Some v -> (Some (Truncated v), str)
   end
 end
 

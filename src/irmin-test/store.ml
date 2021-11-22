@@ -1287,8 +1287,8 @@ module Make (S : S) = struct
           (fun acc (k, v) -> S.Tree.add_tree acc k v)
           t large_dir
       in
-      let p0 = S.Tree.Proof.of_tree c0 in
-      let t0 = S.Tree.Proof.to_tree p0 in
+      let p0 = S.Tree.to_proof c0 in
+      let t0 = S.Tree.of_proof p0 in
       let* () =
         let+ d0 = S.Tree.diff c0 t0 in
         check_diffs "proof roundtrip" [] d0
@@ -1316,9 +1316,14 @@ module Make (S : S) = struct
 
       (* Testing Merkle traces *)
       let test tree keys =
-        Fmt.epr "XXX %a\n" Fmt.(Dump.list pp_key) keys;
-        let s = S.Tree.Proof.Stream.of_tree tree keys in
-        let tree' = S.Tree.Proof.Stream.to_tree s keys in
+        let root_hash =
+          let h = S.Tree.hash tree in
+          match S.Tree.destruct tree with
+          | `Node _ -> `Node h
+          | `Contents (_, m) -> `Contents (h, m)
+        in
+        let s = S.Tree.to_stream tree keys in
+        let tree' = S.Tree.of_stream s ~root_hash keys in
         let pp_tree = Irmin.Type.pp S.tree_t in
         let msg =
           Fmt.str "convert traces %a %a" pp_tree tree
@@ -1329,8 +1334,8 @@ module Make (S : S) = struct
       in
       test S.Tree.empty [];
       test S.Tree.empty [ [ "a" ] ];
-      let check_stream = check S.Tree.Proof.Stream.t in
-      let to_stream = S.Tree.Proof.Stream.of_tree in
+      let check_stream = check S.Tree.stream_t in
+      let to_stream = S.Tree.to_stream in
 
       (* empty tree *)
       let t0 = S.Tree.empty in
@@ -1419,11 +1424,10 @@ module Make (S : S) = struct
          ]
         (to_stream t2 [ [ "foo"; "b" ]; []; [ "z" ] ]);
 
-      Fmt.epr "XXX AAA %a\n" (Irmin.Type.pp S.Hash.t) (S.Tree.hash c0);
       (* more node trees *)
-      test c0 [ [ "foo" ]; [ "bar"; "d"; "x" ] ];
-      test c0 [ [ "foo" ]; [ "bar" ] ];
-      test c0 [ [ "foo"; "a"; "1" ]; [ "bar"; "d" ] ];
+      test t2 [ [ "foo" ]; [ "bar"; "d"; "x" ] ];
+      test t2 [ [ "foo" ]; [ "bar" ] ];
+      test t2 [ [ "foo"; "a"; "1" ]; [ "bar"; "d" ] ];
 
       (* Testing other tree operations. *)
       S.Tree.empty |> fun v0 ->

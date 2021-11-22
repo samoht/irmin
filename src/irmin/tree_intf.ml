@@ -325,30 +325,24 @@ module type S = sig
 
   (** {1 Proofs} *)
 
-  module Proof : sig
-    type tree
-    type t = (hash, step, metadata) Proof.t [@@deriving irmin]
+  type proof = (hash, step, metadata) Proof.t [@@deriving irmin]
 
-    val of_tree : tree -> t
-    (** [of_tree t] is the proof representing the tree [t]. Shallow hashes will
-        be blinded. *)
+  val to_proof : t -> proof
+  (** [to_proof t] is the proof representing the tree [t]. Shallow hashes will
+      be blinded. *)
 
-    val to_tree : t -> tree
-    (** [of_proof p] is the tree representing the proof [p]. Blinded parts of
-        the proof will raise [Dangling_hash] when traversed. *)
+  val of_proof : proof -> t
+  (** [of_proof p] is the tree representing the proof [p]. Blinded parts of the
+      proof will raise [Dangling_hash] when traversed. *)
 
-    val of_keys : tree -> key list -> t Lwt.t
-    (** [of_keys t keys] is the minimal proof that can be used to prove that
-        operations over the domain [keys] are valid with [t]. *)
+  val proof : t -> key list -> proof Lwt.t
+  (** [proof t keys] is the minimal proof that can be used to prove that
+      operations over the domain [keys] are valid with [t]. *)
 
-    module Stream : sig
-      type t = (hash, step, metadata) Proof.Stream.t [@@deriving irmin]
+  type stream = (hash, step, metadata) Proof.Stream.t [@@deriving irmin]
 
-      val of_tree : tree -> key list -> t
-      val to_tree : t -> key list -> tree
-    end
-  end
-  with type tree := t
+  val to_stream : t -> key list -> stream
+  val of_stream : root_hash:kinded_hash -> stream -> key list -> t
 
   (** {1 Caches} *)
 

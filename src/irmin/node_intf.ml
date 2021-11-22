@@ -111,7 +111,7 @@ module type S = sig
   (** The type for proof streams. *)
 
   val to_stream : t -> stream
-  val of_stream : stream -> step * hash -> t option * stream
+  val of_stream : stream -> t option * stream
 end
 
 module type Maker = functor

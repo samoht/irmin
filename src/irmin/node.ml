@@ -122,9 +122,12 @@ struct
     |~ case1 "contents-x" (pair K.t M.t) (fun (h, m) -> `Contents (h, m))
     |> sealv
 
-  let of_entries e = List.to_seq e |> Seq.map of_entry |> of_seq
-  let entries e = StepMap.to_seq e |> Seq.map snd |> List.of_seq
-  let t = Type.map Type.(list entry_t) of_entries entries
+  let of_entries e : t =
+    List.fold_left (fun acc e -> StepMap.add e.name e acc) StepMap.empty e
+
+  (* FIXME: why is this in reverse order? *)
+  let entries e = StepMap.fold (fun _ e acc -> e :: acc) e []
+  let t : t Type.t = Type.map Type.(list entry_t) of_entries entries
 
   module Hash =
     Hash.Typed
@@ -134,8 +137,6 @@ struct
 
         let t = t
       end)
-
-  let hash = Hash.hash
 
   type proof = (hash, step, metadata) Proof.t [@@deriving irmin]
 
@@ -175,26 +176,19 @@ struct
     let e = List.map of_entry (entries t) in
     Seq.singleton (Proof.Stream.Node e)
 
-  let pp_hash = Type.pp Hash.t
-  let pp = Type.pp t
-
-  let of_stream_elt (s : stream_elt) (step, h) : t option =
+  let of_stream_elt (s : stream_elt) : t option =
     match s with
-    | Contents _ | Inode _ -> Proof.bad_stream_exn ()
+    | Contents _ | Inode _ -> Proof.bad_stream_exn "Irmin.Node.of_stream_elt"
     | Empty -> None
     | Node e ->
         let e = List.map to_entry e in
         let t = of_entries e in
-        Fmt.epr "UUU %a %a\n" pp t pp_hash (hash t);
-        Fmt.epr "UUU %a\n" pp_hash h;
-        if not (StepMap.mem step t) then Proof.bad_stream_exn ();
-        if not (equal_hash (hash t) h) then Proof.bad_stream_exn ();
         Some t
 
-  let of_stream (s : stream) h : t option * stream =
+  let of_stream (s : stream) : t option * stream =
     match s () with
     | Seq.Nil -> Proof.end_of_stream_exn ()
-    | Seq.Cons (el, t) -> (of_stream_elt el h, t)
+    | Seq.Cons (el, t) -> (of_stream_elt el, t)
 end
 
 module Store
@@ -475,8 +469,8 @@ module V1 (N : S with type step = string) = struct
   let of_proof p = import (N.of_proof p)
   let to_stream t = N.to_stream (export t)
 
-  let of_stream h s =
-    let t, s = N.of_stream h s in
+  let of_stream s =
+    let t, s = N.of_stream s in
     (Option.map import t, s)
 
   let of_seq entries =
