@@ -1081,53 +1081,8 @@ struct
 
     type proof = (hash, step, metadata) Irmin.Private.Proof.t [@@deriving irmin]
 
-    let bad_proof_exn () = Irmin.Private.Proof.bad_proof_exn ()
-
-    let proof_of_entry (e : Concrete.entry) : step * proof =
-      let p : proof =
-        match e.kind with
-        | Contents -> Blinded_contents (e.hash, Node.default)
-        | Contents_x m -> Blinded_contents (e.hash, m)
-        | Node -> Blinded_node e.hash
-      in
-      (e.name, p)
-
-    let entry_of_proof (name, p) : Concrete.entry =
-      let kind, hash =
-        match (p : proof) with
-        | Blinded_contents (h, m) ->
-            if equal_metadata m Node.default then (Concrete.Contents, h)
-            else (Contents_x m, h)
-        | Blinded_node h -> (Node, h)
-        | _ -> bad_proof_exn ()
-      in
-      { name; kind; hash }
-
-    let value_of_proof (name, p) : step * value =
-      let v =
-        match (p : proof) with
-        | Blinded_contents (h, m) -> `Contents (h, m)
-        | Blinded_node h -> `Node h
-        | _ -> bad_proof_exn ()
-      in
-      (name, v)
-
-    let values_of_proof l =
-      List.to_seq l |> Seq.map value_of_proof |> StepMap.of_seq
-
-    let rec proof_of_concrete h : Concrete.t -> proof = function
-      | Blinded -> Blinded_node (Lazy.force h)
-      | Values vs -> Node (List.map proof_of_entry vs)
-      | Tree tr ->
-          let proofs =
-            List.fold_left
-              (fun acc (e : _ Concrete.pointer) ->
-                let p = proof_of_concrete (lazy e.pointer) e.tree in
-                let e = (e.index, p) in
-                e :: acc)
-              [] (List.rev tr.pointers)
-          in
-          Inode { length = tr.length; proofs }
+    let bad_proof_exn ctx =
+      Irmin.Private.Proof.bad_proof_exn ("Irmin_pack.Inode." ^ ctx)
 
     let hash_v v = Bin.V.hash (to_bin_v Truncated v)
 
@@ -1148,6 +1103,59 @@ struct
           hash_v v
       | Blinded_node h -> h
       | Blinded_contents (h, _) -> h
+
+    and value_of_proof (name, p) : step * value =
+      let v =
+        match (p : proof) with
+        | Blinded_contents (h, m) -> `Contents (h, m)
+        | Blinded_node h -> `Node h
+        | Node _ ->
+            (* very costly as we do not cache that hash *)
+            `Node (hash_of_proof 0 p)
+        | _ -> bad_proof_exn "value_of_proof"
+      in
+      (name, v)
+
+    and values_of_proof l =
+      List.to_seq l |> Seq.map value_of_proof |> StepMap.of_seq
+
+    let proof_of_entry (e : Concrete.entry) : step * proof =
+      let p : proof =
+        match e.kind with
+        | Contents -> Blinded_contents (e.hash, Node.default)
+        | Contents_x m -> Blinded_contents (e.hash, m)
+        | Node -> Blinded_node e.hash
+      in
+      (e.name, p)
+
+    let rec proof_of_concrete h : Concrete.t -> proof = function
+      | Blinded -> Blinded_node (Lazy.force h)
+      | Values vs -> Node (List.map proof_of_entry vs)
+      | Tree tr ->
+          let proofs =
+            List.fold_left
+              (fun acc (e : _ Concrete.pointer) ->
+                let p = proof_of_concrete (lazy e.pointer) e.tree in
+                let e = (e.index, p) in
+                e :: acc)
+              [] (List.rev tr.pointers)
+          in
+          Inode { length = tr.length; proofs }
+
+    let entry_of_proof (name, p) : Concrete.entry =
+      let kind, hash =
+        match (p : proof) with
+        | Blinded_contents (h, m) ->
+            if equal_metadata m Node.default then (Concrete.Contents, h)
+            else (Contents_x m, h)
+        | Blinded_node h -> (Node, h)
+        | Node _ ->
+            (* this is costly *)
+            let h = hash_of_proof 0 p in
+            (Node, h)
+        | Inode _ -> bad_proof_exn "entry_of_proof"
+      in
+      { name; kind; hash }
 
     let rec concrete_of_proof depth : proof -> Concrete.t = function
       | Blinded_node _ -> Blinded

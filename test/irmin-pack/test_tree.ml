@@ -239,6 +239,10 @@ let test_proofs ctxt ops =
 
   (* test equivalence *)
   let tree_proof = Tree.of_proof proof in
+  let pp_proof = Irmin.Type.pp_json ~minify:false Tree.proof_t in
+  let pp_tree = Irmin.Type.pp_json ~minify:false Store.tree_t in
+  Fmt.epr "XXX proof=%a\n" pp_proof proof;
+  Fmt.epr "XXX tree=%a\n" pp_tree tree_proof;
 
   let* () = check_completeness tree_proof ops in
   Alcotest.(check_repr Store.Hash.t)

@@ -125,8 +125,7 @@ struct
   let of_entries e : t =
     List.fold_left (fun acc e -> StepMap.add e.name e acc) StepMap.empty e
 
-  (* FIXME: why is this in reverse order? *)
-  let entries e = StepMap.fold (fun _ e acc -> e :: acc) e []
+  let entries e = StepMap.fold (fun _ e acc -> e :: acc) e [] |> List.rev
   let t : t Type.t = Type.map Type.(list entry_t) of_entries entries
 
   module Hash =
@@ -139,6 +138,8 @@ struct
       end)
 
   type proof = (hash, step, metadata) Proof.t [@@deriving irmin]
+
+  let bad_proof_exn ctx = Proof.bad_proof_exn ("Irmin.Node." ^ ctx)
 
   let proof_of_entry (e : entry) : step * proof =
     let p =
@@ -153,7 +154,7 @@ struct
       match p with
       | Proof.Blinded_contents (h, m) -> (`Contents m, h)
       | Proof.Blinded_node h -> (`Node, h)
-      | _ -> Proof.bad_proof_exn ()
+      | _ -> bad_proof_exn "entry_of_proof"
     in
     (name, { name; kind; node })
 
@@ -166,7 +167,7 @@ struct
 
   let of_proof (t : proof) =
     match t with
-    | Blinded_contents _ | Blinded_node _ | Inode _ -> Proof.bad_proof_exn ()
+    | Blinded_contents _ | Blinded_node _ | Inode _ -> bad_proof_exn "of_proof"
     | Node e -> of_proof_entries e
 
   type stream = (hash, step, metadata) Proof.Stream.t [@@deriving irmin]
