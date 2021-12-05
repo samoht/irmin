@@ -353,9 +353,6 @@ module type S = sig
          and type contents := contents
          and type node := node
          and type hash := hash
-         and type Proof.tree_proof = (contents, hash, step, metadata) Proof.tree
-         and type Proof.stream_elt =
-              (contents, hash, step, metadata) Proof.stream_elt
 
     (** {1 Import/Export} *)
 
@@ -380,8 +377,11 @@ module type S = sig
 
     (** {1 Proofs} *)
 
+    type proof_tree = Proof.tree Proof.t
+    (** The type for compressed partial Merkle proof trees. *)
+
     val produce_proof :
-      repo -> kinded_hash -> (tree -> tree Lwt.t) -> Proof.t Lwt.t
+      repo -> kinded_hash -> (tree -> tree Lwt.t) -> proof_tree Lwt.t
     (** [produce r h f] runs [f] on top of a real store [r], producing a proof
         using the initial root hash [h].
 
@@ -395,7 +395,7 @@ module type S = sig
         proof should then interact as if they were all unshallowed (note: in the
         case of nested proofs, it's unclear what [verify_proof] should do...). *)
 
-    val verify_proof : Proof.t -> (tree -> tree Lwt.t) -> tree Lwt.t
+    val verify_proof : proof_tree -> (tree -> tree Lwt.t) -> tree Lwt.t
     (** [verify t f] runs [f] in checking mode, loading data from the proof as
         needed.
 
@@ -406,6 +406,16 @@ module type S = sig
         Reject the proof by raising [Proof.Bad_proof] unless the given
         computation performs exactly the same state operations as the generating
         computation, *in some order*. *)
+
+    type proof_stream = Proof.stream Proof.t
+    (** The type for Merkle proof streams. *)
+
+    val produce_stream :
+      repo -> kinded_hash -> (tree -> tree Lwt.t) -> proof_stream Lwt.t
+    (** Same as [produce_proof] but for proof streams. *)
+
+    val verify_stream : proof_stream -> (tree -> tree Lwt.t) -> tree Lwt.t
+    (** Same as [verify_proof] but for proof streams. *)
   end
 
   (** {1 Reads} *)

@@ -14,7 +14,15 @@
  * OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
  *)
 
-module type Def = sig
+module type S = sig
+  type contents
+  type hash
+  type step
+  type metadata
+
+  type kinded_hash = [ `Contents of hash * metadata | `Node of hash ]
+  [@@deriving irmin]
+
   type 'a inode = { length : int; proofs : (int * 'a) list } [@@deriving irmin]
   (** The type for (internal) inode proofs. These proofs encode large
       directories into a more efficient tree-like structure.
@@ -29,7 +37,9 @@ module type Def = sig
       entries. This list can be sparsed so every proof is indexed by their
       position between [0 ... (Conf.entries-1)].*)
 
-  (** The type for tree proofs.
+  (** The type for tree proofs. Tree proofs do not provide any guarantee with
+      the ordering of computations. For instance, if two effects commute, they
+      won't be distinguishable by this kind of proofs.
 
       [Blinded_node h] is a shallow pointer to a node having hash [h].
 
@@ -46,76 +56,50 @@ module type Def = sig
       and metadata [m].
 
       [Contents c] is the contents [c]. *)
-  type ('contents, 'hash, 'step, 'metadata) tree =
-    | Blinded_node of 'hash
-    | Node of ('step * ('contents, 'hash, 'step, 'metadata) tree) list
-    | Inode of ('contents, 'hash, 'step, 'metadata) tree inode
-    | Blinded_contents of 'hash * 'metadata
-    | Contents of 'contents * 'metadata
+  type tree =
+    | Blinded_node of hash
+    | Node of (step * tree) list
+    | Inode of tree inode
+    | Blinded_contents of hash * metadata
+    | Contents of contents * metadata
   [@@deriving irmin]
 
-  type ('hash, 'metadata) kinded_hash =
-    [ `Node of 'hash | `Contents of 'hash * 'metadata ]
-  [@@deriving irmin]
-  (** The type for kinded hashes. *)
-
-  (** TODO *)
-  type ('contents, 'hash, 'step, 'metadata) stream_elt =
+  (** The type for elements of stream proofs *)
+  type stream_elt =
     | Empty
-    | Node of ('step * ('hash, 'metadata) kinded_hash) list
-    | Inode of 'hash inode
-    | Contents of 'contents
+    | Node of (step * kinded_hash) list
+    | Inode of hash inode
+    | Contents of contents
   [@@deriving irmin]
-end
 
-module type S = sig
-  type contents
-  type hash
-  type step
-  type metadata
-  type tree_proof [@@deriving irmin]
-  type stream_elt [@@deriving irmin]
-  type stream_proof = stream_elt Seq.t [@@deriving irmin]
-  type kinded_hash = [ `Contents of hash * metadata | `Node of hash ]
+  type stream = stream_elt Seq.t
+  (** The type for stream proofs. Stream poofs provides stronger ordering
+      guarantees as the read effects have to happen in the exact same order and
+      they are easier to verify. However the size of serialised proof streams is
+      larger than proof trees as they include the hash of all intermediate
+      nodes. *)
 
-  type t [@@deriving irmin]
-  (** The type for proofs. *)
+  type 'a t [@@deriving irmin]
+  (** The type for proofs. ['a] is the type type for proof states. *)
 
-  type state = Tree of tree_proof | Stream of stream_proof [@@deriving irmin]
-
-  val v : before:kinded_hash -> after:kinded_hash -> state -> t
+  val v : before:kinded_hash -> after:kinded_hash -> 'a -> 'a t
   (** [v ~before ~after p] proves that the state advanced from [before] to
       [after]. [p]'s hash is [before], and [p] contains the minimal information
       for the computation to reach [after]. *)
 
-  val before : t -> kinded_hash
+  val before : 'a t -> kinded_hash
   (** [before t] it the state's hash at the beginning of the computation. *)
 
-  val after : t -> kinded_hash
+  val after : 'a t -> kinded_hash
   (** [after t] is the state's hash at the end of the computation. *)
 
-  val state : t -> state
+  val state : 'a t -> 'a
   (** [proof t] is a subset of the initial state needed to prove that the proven
-      computation could run without performing without I/O.
-
-      Tree proofs do not provide any guarantee with the ordering of
-      computations. For instance, if two effects commute, they won't be
-      distinguishable by this kind of proofs.
-
-      Stream poofs provides stronger ordering guarantees as the read effects
-      have to happen in the exact same order and they are easier to verify.
-      However the size of serialised proof streams is larger than proof trees as
-      they include the hash of all intermediate nodes. *)
+      computation could run without performing without I/O. *)
 end
 
 module type Proof = sig
-  include Def
-  (** @inline *)
-
-  module type S = sig
-    include S
-    (** @inline *)
-  end
+  module type S = S
 
   exception Bad_proof of { context : string }
   exception Bad_stream of { context : string }
@@ -135,7 +119,5 @@ module type Proof = sig
          and type hash := H.t
          and type step := P.step
          and type metadata := M.t
-         and type tree_proof = (C.t, H.t, P.step, M.t) tree
-         and type stream_elt = (C.t, H.t, P.step, M.t) stream_elt
   end
 end

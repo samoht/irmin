@@ -332,16 +332,14 @@ module type S = sig
          and type hash := hash
          and type step := step
          and type metadata := metadata
-         and type tree_proof = (contents, hash, step, metadata) Proof.tree
-         and type stream_elt = (contents, hash, step, metadata) Proof.stream_elt
 
-    type tree
+    type irmin_tree
 
-    val to_tree : t -> tree
+    val to_tree : tree t -> irmin_tree
     (** [to_tree p] is the tree representing the tree proof [p]. Blinded parts
         of the proof will raise [Dangling_hash] when traversed. *)
   end
-  with type tree := t
+  with type irmin_tree := t
 
   (** {1 Caches} *)
 
@@ -379,10 +377,12 @@ module type S = sig
 
   module Env : sig
     type t [@@deriving irmin]
-    type read_set
+    type set
+    type stream
 
     val is_empty : t -> bool
-    val read_set : t -> read_set option
+    val set : t -> set option
+    val stream : t -> stream option
     val length : t -> int
   end
 
@@ -403,18 +403,6 @@ module type Tree = sig
          and type metadata = P.Node.Metadata.t
          and type contents = P.Contents.value
          and type hash = P.Hash.t
-         and type Proof.tree_proof =
-              ( P.Contents.value,
-                P.Hash.t,
-                P.Node.Path.step,
-                P.Node.Metadata.t )
-              Proof.tree
-         and type Proof.stream_elt =
-              ( P.Contents.value,
-                P.Hash.t,
-                P.Node.Path.step,
-                P.Node.Metadata.t )
-              Proof.stream_elt
 
     type kinded_hash := [ `Contents of hash * metadata | `Node of hash ]
 
@@ -437,9 +425,16 @@ module type Tree = sig
     val of_private_node : P.Repo.t -> P.Node.value -> node
     val to_private_node : node -> P.Node.value or_error Lwt.t
 
-    val produce_proof :
-      P.Repo.t -> kinded_hash -> (t -> t Lwt.t) -> Proof.t Lwt.t
+    type proof_tree = Proof.tree Proof.t
+    type proof_stream = Proof.stream Proof.t
 
-    val verify_proof : Proof.t -> (t -> t Lwt.t) -> t Lwt.t
+    val produce_proof :
+      P.Repo.t -> kinded_hash -> (t -> t Lwt.t) -> proof_tree Lwt.t
+
+    val produce_stream :
+      P.Repo.t -> kinded_hash -> (t -> t Lwt.t) -> proof_stream Lwt.t
+
+    val verify_proof : proof_tree -> (t -> t Lwt.t) -> t Lwt.t
+    val verify_stream : proof_stream -> (t -> t Lwt.t) -> t Lwt.t
   end
 end
