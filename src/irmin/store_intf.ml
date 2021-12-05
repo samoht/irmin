@@ -354,6 +354,8 @@ module type S = sig
          and type node := node
          and type hash := hash
          and type Proof.tree_proof = (contents, hash, step, metadata) Proof.tree
+         and type Proof.stream_elt =
+              (contents, hash, step, metadata) Proof.stream_elt
 
     (** {1 Import/Export} *)
 

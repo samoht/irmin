@@ -45,6 +45,24 @@ let tree_t contents_t hash_t step_t metadata_t =
              Contents (x1, x2))
       |> Type.sealv)
 
+type ('hash, 'metadata) kinded_hash =
+  [ `Node of 'hash | `Contents of 'hash * 'metadata ]
+[@@deriving irmin]
+
+type ('contents, 'hash, 'step, 'metadata) stream_elt =
+  | Empty
+  | Node of ('step * ('hash, 'metadata) kinded_hash) list
+  | Inode of 'hash inode
+  | Contents of 'contents
+[@@deriving irmin]
+
+type ('contents, 'hash, 'step, 'metadata) stream =
+  ('contents, 'hash, 'step, 'metadata) stream_elt Seq.t
+
+let stream_t contents_t hash_t step_t metadata_t =
+  Type.map [%typ: (contents, hash, step, metadata) stream_elt list] List.to_seq
+    List.of_seq
+
 module Make
     (C : Type.S)
     (H : Type.S) (S : sig
@@ -56,22 +74,29 @@ struct
   type hash = H.t [@@deriving irmin]
   type step = S.step [@@deriving irmin]
   type metadata = M.t [@@deriving irmin]
+  type tree_proof = (contents, hash, step, metadata) tree [@@deriving irmin]
+
+  type nonrec stream_elt = (contents, hash, step, metadata) stream_elt
+  [@@deriving irmin]
+
+  type stream_proof = (contents, hash, step, metadata) stream [@@deriving irmin]
+  type state = Tree of tree_proof | Stream of stream_proof [@@deriving irmin]
+  type 'a inode = { length : int; proofs : (int * 'a) list } [@@deriving irmin]
+  type tree_proof = (contents, hash, step, metadata) tree [@@deriving irmin]
 
   type kinded_hash = [ `Contents of hash * metadata | `Node of hash ]
   [@@deriving irmin]
 
-  type 'a inode = { length : int; proofs : (int * 'a) list } [@@deriving irmin]
-  type tree_proof = (contents, hash, step, metadata) tree [@@deriving irmin]
-
-  type t = { before : kinded_hash; after : kinded_hash; proof : tree_proof }
-  [@@deriving irmin]
+  type t = { before : kinded_hash; after : kinded_hash; state : state }
 
   let before t = t.before
   let after t = t.after
-  let proof t = t.proof
-  let v ~before ~after proof = { after; before; proof }
+  let state t = t.state
+  let v ~before ~after state = { after; before; state }
 end
 
 exception Bad_proof of { context : string }
+exception Bad_stream of { context : string }
 
 let bad_proof_exn context = raise (Bad_proof { context })
+let bad_stream_exn context = raise (Bad_stream { context })

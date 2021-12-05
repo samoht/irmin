@@ -102,6 +102,12 @@ module Seq = struct
     in
     aux s
 
+  let length t =
+    let rec aux n t =
+      match t () with Seq.Nil -> n | Seq.Cons (_, t) -> aux (n + 1) t
+    in
+    aux 0 t
+
   (* For compatibility with versions older than ocaml.4.11.0 *)
   let rec append seq1 seq2 () =
     match seq1 () with

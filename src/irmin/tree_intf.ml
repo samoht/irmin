@@ -333,6 +333,7 @@ module type S = sig
          and type step := step
          and type metadata := metadata
          and type tree_proof = (contents, hash, step, metadata) Proof.tree
+         and type stream_elt = (contents, hash, step, metadata) Proof.stream_elt
 
     type tree
 
@@ -408,6 +409,12 @@ module type Tree = sig
                 P.Node.Path.step,
                 P.Node.Metadata.t )
               Proof.tree
+         and type Proof.stream_elt =
+              ( P.Contents.value,
+                P.Hash.t,
+                P.Node.Path.step,
+                P.Node.Metadata.t )
+              Proof.stream_elt
 
     type kinded_hash := [ `Contents of hash * metadata | `Node of hash ]
 

@@ -53,6 +53,19 @@ module type Def = sig
     | Blinded_contents of 'hash * 'metadata
     | Contents of 'contents * 'metadata
   [@@deriving irmin]
+
+  type ('hash, 'metadata) kinded_hash =
+    [ `Node of 'hash | `Contents of 'hash * 'metadata ]
+  [@@deriving irmin]
+  (** The type for kinded hashes. *)
+
+  (** TODO *)
+  type ('contents, 'hash, 'step, 'metadata) stream_elt =
+    | Empty
+    | Node of ('step * ('hash, 'metadata) kinded_hash) list
+    | Inode of 'hash inode
+    | Contents of 'contents
+  [@@deriving irmin]
 end
 
 module type S = sig
@@ -61,14 +74,16 @@ module type S = sig
   type step
   type metadata
   type tree_proof [@@deriving irmin]
-
+  type stream_elt [@@deriving irmin]
+  type stream_proof = stream_elt Seq.t [@@deriving irmin]
   type kinded_hash = [ `Contents of hash * metadata | `Node of hash ]
-  [@@deriving irmin]
 
   type t [@@deriving irmin]
   (** The type for proofs. *)
 
-  val v : before:kinded_hash -> after:kinded_hash -> tree_proof -> t
+  type state = Tree of tree_proof | Stream of stream_proof [@@deriving irmin]
+
+  val v : before:kinded_hash -> after:kinded_hash -> state -> t
   (** [v ~before ~after p] proves that the state advanced from [before] to
       [after]. [p]'s hash is [before], and [p] contains the minimal information
       for the computation to reach [after]. *)
@@ -79,13 +94,18 @@ module type S = sig
   val after : t -> kinded_hash
   (** [after t] is the state's hash at the end of the computation. *)
 
-  val proof : t -> tree_proof
-  (** [proof t] is the tree proof needed to prove that the proven computation
-      could run without performing without I/O.
+  val state : t -> state
+  (** [proof t] is a subset of the initial state needed to prove that the proven
+      computation could run without performing without I/O.
 
-      Note: proofs do not provide any guarantee with the ordering of
+      Tree proofs do not provide any guarantee with the ordering of
       computations. For instance, if two effects commute, they won't be
-      distinguishable by this kind of proofs. *)
+      distinguishable by this kind of proofs.
+
+      Stream poofs provides stronger ordering guarantees as the read effects
+      have to happen in the exact same order and they are easier to verify.
+      However the size of serialised proof streams is larger than proof trees as
+      they include the hash of all intermediate nodes. *)
 end
 
 module type Proof = sig
@@ -97,20 +117,25 @@ module type Proof = sig
     (** @inline *)
   end
 
-  val bad_proof_exn : string -> 'a
-
   exception Bad_proof of { context : string }
+  exception Bad_stream of { context : string }
+
+  val bad_proof_exn : string -> 'a
+  val bad_stream_exn : string -> 'a
 
   module Make
       (C : Type.S)
       (H : Hash.S) (P : sig
         type step [@@deriving irmin]
       end)
-      (M : Type.S) :
-    S
-      with type contents := C.t
-       and type hash := H.t
-       and type step := P.step
-       and type metadata := M.t
-       and type tree_proof = (C.t, H.t, P.step, M.t) tree
+      (M : Type.S) : sig
+    include
+      S
+        with type contents := C.t
+         and type hash := H.t
+         and type step := P.step
+         and type metadata := M.t
+         and type tree_proof = (C.t, H.t, P.step, M.t) tree
+         and type stream_elt = (C.t, H.t, P.step, M.t) stream_elt
+  end
 end

@@ -133,6 +133,7 @@ module Make (P : Private.S) = struct
   end
 
   module Metadata = P.Node.Metadata
+  module Tree_proof = Proof.Make (P.Contents.Val) (P.Hash) (Path) (Metadata)
 
   type key = Path.t
   type hash = P.Hash.t
@@ -213,44 +214,65 @@ module Make (P : Private.S) = struct
     }
     [@@deriving irmin]
 
-    type t = read_set option ref
+    type read_stream = Tree_proof.stream_elt Queue.t
+    type effects = Empty | Set of read_set | Stream of read_stream
+    type t = effects ref
 
     let t = Type.map [%typ: read_set option] ref ( ! )
 
     let length (t : t) =
       match !t with
-      | None -> 0
-      | Some t -> Hashes.length t.contents + Hashes.length t.nodes
+      | Empty -> 0
+      | Set s -> Hashes.length s.contents + Hashes.length s.nodes
+      | Stream s -> Queue.length s
 
-    let empty () : t = ref None
-    let is_empty (t : t) = !t = None
+    let empty () : t = ref Empty
+    let is_empty (t : t) = !t = Empty
     let read_set (t : t) = !t
+    let of_seq s = ref (Stream s)
 
     let track_reads_as_sets () =
       let c = { contents = Hashes.create 13; nodes = Hashes.create 13 } in
-      ref (Some c)
+      ref (Set c)
 
-    let contents (t : t) =
-      match !t with None -> None | Some s -> Some s.contents
+    let track_reads_as_list () =
+      let q = Queue.create () in
+      ref (Stream q)
 
-    let find_contents (t : t) h =
-      match (contents t, h) with
-      | Some env, Some h -> Hashes.find_opt env h
+    let bad_stream_exn s = Proof.bad_stream_exn ("Tree.Env." ^ s)
+
+    let check_content_integrity c h =
+      cnt.contents_hash <- cnt.contents_hash + 1;
+      let c = P.Contents.Key.hash c in
+      if not (equal_hash c h) then bad_stream_exn "check_content_integrity"
+
+    let check_node_integrity n h =
+      cnt.node_hash <- cnt.node_hash + 1;
+      let c = P.Node.Key.hash n in
+      if not (equal_hash c h) then bad_stream_exn "check_node_integrity"
+
+    let find_contents t h =
+      match (!t, h) with
+      | Set s, Some h -> Hashes.find_opt s.contents h
       | _ -> None
 
     let add_contents (t : t) h v =
-      match (contents t, h, v) with
-      | Some env, Some h, Some v -> Hashes.add env h v
+      match (!t, h, v) with
+      | Set s, Some h, Some v -> Hashes.add s.contents h v
+      | Stream s, Some _, Some v -> Queue.add (Proof.Contents v) s
       | _ -> ()
 
     let find_node (t : t) h =
       match (!t, h) with
-      | Some env, Some h -> Hashes.find_opt env.nodes h
+      | Set s, Some h -> Hashes.find_opt s.nodes h
       | _ -> None
 
-    let add_node (t : t) h i =
+    let add_node (t : t) h n =
       match (!t, h) with
-      | Some env, Some h -> Hashes.replace env.nodes h i
+      | Set s, Some h -> Hashes.replace s.nodes h n
+      | Stream s, Some _ ->
+          let n = P.Node.Val.list n in
+          Queue.add (Proof.Node n) s
       | _ -> ()
 
     (* r = x union y *)
@@ -267,15 +289,17 @@ module Make (P : Private.S) = struct
     (* x' = y' <- x union y *)
     let merge (x : t) (y : t) =
       match (!x, !y) with
-      | None, None -> ()
-      | None, (Some _ as y) -> x := y
-      | (Some _ as x), None -> y := x
-      | Some a, Some b ->
+      | Empty, Empty -> ()
+      | Empty, (_ as y) -> x := y
+      | (_ as x), Empty -> y := x
+      | Set a, Set b ->
           if a == b then ()
           else (
             merge_hashes a.nodes ~into:b.nodes;
             merge_hashes a.contents ~into:b.contents;
             x := !y)
+      | Stream a, Stream b -> if a == b then () else failwith "TODO: merge/1"
+      | _ -> failwith "TODO: merge/3"
   end
 
   module Contents = struct
@@ -303,7 +327,7 @@ module Make (P : Private.S) = struct
       if not (info_is_empty i) then (
         i.value <- None;
         i.hash <- None;
-        i.env := None)
+        i.env := Empty)
 
     let clear t = clear_info t.info
 
@@ -576,7 +600,7 @@ module Make (P : Private.S) = struct
         i.map <- None;
         i.hash <- None;
         i.findv_cache <- None;
-        i.env := None)
+        i.env := Empty)
 
     let rec clear_elt ~max_depth depth v =
       match v with
@@ -1897,7 +1921,7 @@ module Make (P : Private.S) = struct
   module Proof = struct
     type tree = t
 
-    include Proof.Make (P.Contents.Val) (P.Hash) (Path) (Metadata)
+    include Tree_proof
 
     let bad_proof_exn c = Proof.bad_proof_exn ("Irmin.Tree." ^ c)
 
@@ -2108,7 +2132,7 @@ module Make (P : Private.S) = struct
        on purpose: we look at the effect on [f] on [tree]'s caches and
        we rely on the fact that the caches are env across
        copy-on-write copies of [tree]. *)
-    let proof = Proof.of_tree tree in
+    let proof = Proof.(Tree (of_tree tree)) in
     let after = hash tree_after in
     (* [tree_after] and [env] are dead now, so should avoid any
        memory leaks *)
@@ -2118,7 +2142,13 @@ module Make (P : Private.S) = struct
   let verify_proof p f =
     let before = Proof.before p in
     let after = Proof.after p in
-    let tree = Proof.to_tree p in
+    let tree =
+      match Proof.value p with
+      | Tree _ -> Proof.to_tree p
+      | Stream s ->
+          let env = Env.of_seq s in
+          import_with_env ~env repo before
+    in
     (* first check that [before] corresponds to [tree]'s hash. *)
     if not (equal_kinded_hash before (hash ~cache:false tree)) then
       Proof.bad_proof_exn "verify_proof: invalid before hash";
