@@ -72,7 +72,7 @@ module type S = sig
     | Contents of contents
   [@@deriving irmin]
 
-  type stream = stream_elt Seq.t
+  type stream = stream_elt Seq.t [@@deriving irmin]
   (** The type for stream proofs. Stream poofs provides stronger ordering
       guarantees as the read effects have to happen in the exact same order and
       they are easier to verify. However the size of serialised proof streams is

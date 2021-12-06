@@ -377,7 +377,7 @@ module type S = sig
 
     (** {1 Proofs} *)
 
-    type proof_tree = Proof.tree Proof.t
+    type proof_tree = Proof.tree Proof.t [@@deriving irmin]
     (** The type for compressed partial Merkle proof trees. *)
 
     val produce_proof :
@@ -407,7 +407,7 @@ module type S = sig
         computation performs exactly the same state operations as the generating
         computation, *in some order*. *)
 
-    type proof_stream = Proof.stream Proof.t
+    type proof_stream = Proof.stream Proof.t [@@deriving irmin]
     (** The type for Merkle proof streams. *)
 
     val produce_stream :

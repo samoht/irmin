@@ -49,6 +49,8 @@ struct
 
   type stream = stream_elt Seq.t
 
+  let stream_t = Type.map [%typ: stream_elt list] List.to_seq List.of_seq
+
   type 'a t = { before : kinded_hash; after : kinded_hash; state : 'a }
   [@@deriving irmin]
 

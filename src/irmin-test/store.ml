@@ -1535,6 +1535,7 @@ module Make (S : S) = struct
       let* p = S.Tree.produce_proof repo hash f1 in
       let* () = check_proof_outside p in
 
+      let pp_stream = Irmin.Type.pp S.Tree.proof_stream_t in
       let check_proof f =
         let* p = S.Tree.produce_proof repo hash f in
         let+ _ = S.Tree.verify_proof p f in
@@ -1542,6 +1543,7 @@ module Make (S : S) = struct
       in
       let check_stream f =
         let* p = S.Tree.produce_stream repo hash f in
+        Fmt.epr "XXX STREAM=%a\n" pp_stream p;
         let+ _ = S.Tree.verify_stream p f in
         ()
       in
@@ -1616,7 +1618,7 @@ module Make (S : S) = struct
         Lwt.catch
           (fun () ->
             let+ _ = S.Tree.verify_proof p f0 in
-            Alcotest.fail "verify should have failed")
+            Alcotest.fail "verify_proof should have failed: %a")
           (function
             | Irmin.Proof.Bad_proof _ -> Lwt.return () | e -> Lwt.fail e)
       in
@@ -1646,16 +1648,19 @@ module Make (S : S) = struct
           some_contents
       in
 
+      Fmt.epr "XXX A\n";
+
       (* test negative streams *)
       let check_bad_stream p =
         Lwt.catch
           (fun () ->
             let+ _ = S.Tree.verify_stream p f0 in
-            Alcotest.fail "verify should have failed")
+            Alcotest.failf "verify_stream should have failed %a" pp_stream p)
           (function
             | Irmin.Proof.Bad_stream _ -> Lwt.return () | e -> Lwt.fail e)
       in
       let* p0 = S.Tree.produce_stream repo hash f0 in
+      Fmt.epr "XXX 0\n";
       let proof ?(before = S.Tree.Proof.before p0)
           ?(after = S.Tree.Proof.after p0) ?(contents = S.Tree.Proof.state p0)
           () =
@@ -1666,6 +1671,7 @@ module Make (S : S) = struct
       let* () = check_bad_stream (proof ~before:wrong_kinded_hash ()) in
       let* () = check_bad_stream (proof ~after:wrong_kinded_hash ()) in
       let* _ = S.Tree.verify_stream (proof ()) f0 in
+      Fmt.epr "XXX 1\n";
       let some_contents : S.Tree.Proof.stream list =
         let s : S.Tree.Proof.stream_elt list -> S.Tree.Proof.stream =
           List.to_seq
@@ -1682,8 +1688,12 @@ module Make (S : S) = struct
         ]
       in
       let* () =
+        let x = ref 1 in
         Lwt_list.iter_s
-          (fun c -> check_bad_stream (proof ~contents:c ()))
+          (fun c ->
+            incr x;
+            Fmt.epr "XXX %d\n" !x;
+            check_bad_stream (proof ~contents:c ()))
           some_contents
       in
       P.Repo.close repo

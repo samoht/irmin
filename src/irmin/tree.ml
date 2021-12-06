@@ -222,6 +222,10 @@ module Make (P : Private.S) = struct
     let stream_t : stream Type.t =
       Type.map [%typ: Tree_proof.stream_elt list] stream_of_list list_of_stream
 
+    let pp_value = Type.pp P.Node.Val.t
+    let pp_value_opt = Type.(pp (option P.Node.Val.t))
+    let pp_stream = Type.pp stream_t
+
     type effects =
       | Empty
       | Set of set
@@ -254,8 +258,9 @@ module Make (P : Private.S) = struct
       | Empty -> failwith "to_stream_exn: empty"
 
     let of_stream (s : Tree_proof.stream) =
-      let q = Queue.of_seq s in
-      ref (Read_stream q)
+      let s = Queue.of_seq s in
+      Fmt.epr "XXX of_stream %a\n" pp_stream s;
+      ref (Read_stream s)
 
     let track_reads_as_sets () =
       let c = { contents = Hashes.create 13; nodes = Hashes.create 13 } in
@@ -273,6 +278,7 @@ module Make (P : Private.S) = struct
       if not (equal_hash c h) then bad_stream_exn "check_content_integrity"
 
     let check_node_integrity n h =
+      Fmt.epr "XXX check_node_integrity %a %a\n%!" pp_hash h pp_value n;
       cnt.node_hash <- cnt.node_hash + 1;
       let c = P.Node.Key.hash n in
       if not (equal_hash c h) then bad_stream_exn "check_node_integrity"
@@ -297,28 +303,38 @@ module Make (P : Private.S) = struct
           check_node_integrity n h;
           Some n
       | Inode i ->
-          let find = node_of_stream s in
+          let find h =
+            Fmt.epr "XXX node_of_stream.find %a\n%!" pp_hash h;
+            node_of_stream s h
+          in
           let n = P.Node.Val.of_inode ~find i.length i.proofs in
           check_node_integrity n h;
           Some n
-      | Contents _ -> bad_stream_exn "contents"
+      | Contents _ ->
+          Fmt.epr "XXX node_of_stream %a %a\n" pp_stream s pp_hash h;
+          bad_stream_exn "contents"
       | exception Queue.Empty -> bad_stream_exn "empty"
 
     let find_contents t h =
       match (!t, h) with
       | Set s, Some h -> Hashes.find_opt s.contents h
-      | Read_stream s, Some h -> contents_of_stream s h
+      | Read_stream s, Some h ->
+          Fmt.epr "XXX Env.find_contents %a %a\n" pp_stream s pp_hash h;
+          contents_of_stream s h
       | _ -> None
 
     let add_contents (t : t) h v =
       match (!t, h, v) with
       | Set s, Some h, Some v -> Hashes.add s.contents h v
-      | Write_stream s, Some _, Some v -> Queue.add (Tree_proof.Contents v) s
+      | Write_stream s, Some h, Some v ->
+          Fmt.epr "XXX Env.add_contents %a %a\n" pp_stream s pp_hash h;
+          Queue.add (Tree_proof.Contents v) s
       | _ -> ()
 
     let add_stream s = function
       | None -> Queue.add Tree_proof.Empty s
       | Some n -> (
+          Fmt.epr "XXX add_stream %a\n" pp_value n;
           match P.Node.Val.to_stream_elt n with
           | `Empty -> assert false
           | `Node n -> Queue.add (Tree_proof.Node n) s
@@ -327,10 +343,7 @@ module Make (P : Private.S) = struct
               Queue.add i s)
 
     let add_node (t : t) h n =
-      match !t with
-      | Set s -> Hashes.replace s.nodes h n
-      | Write_stream s -> add_stream s (Some n)
-      | _ -> ()
+      match !t with Set s -> Hashes.replace s.nodes h n | _ -> ()
 
     let find_node (t : t) h =
       match !t with
@@ -341,19 +354,24 @@ module Make (P : Private.S) = struct
     let find_node_opt (t : t) h =
       match h with None -> None | Some h -> find_node t h
 
-    let add_node_opt (t : t) h n =
-      match h with None -> () | Some h -> add_node t h n
-
     (* Set-up the right environment when verifying the stream *)
     let env (t : t) =
       match !t with
-      | Read_stream s -> Some (fun h -> node_of_stream s h)
+      | Read_stream s ->
+          Some
+            (fun h ->
+              Fmt.epr "XXX env %a\n%!" pp_hash h;
+              node_of_stream s h)
       | _ -> None
 
     (* Set-up the right hooks when building a stream *)
     let hook (t : t) =
       match !t with
-      | Write_stream s -> Some (fun _ v -> add_stream s v)
+      | Write_stream s ->
+          Some
+            (fun h v ->
+              Fmt.epr "XXX hook %a %a\n%!" pp_hash h pp_value_opt v;
+              add_stream s v)
       | _ -> None
 
     (* x' = y' <- x union y *)
@@ -401,9 +419,7 @@ module Make (P : Private.S) = struct
 
     let of_v ~env v =
       let hash = match v with Hash (_, k) -> Some k | _ -> None in
-      let value =
-        match v with Value v -> Some v | _ -> Env.find_contents env hash
-      in
+      let value = match v with Value v -> Some v | _ -> None in
       let info = { hash; value; env } in
       { v; info }
 
@@ -611,11 +627,7 @@ module Make (P : Private.S) = struct
 
     let of_v ~env v =
       let hash = match v with Hash (_, k) -> Some k | _ -> None in
-      let value =
-        match v with
-        | Value (_, v, None) -> Some v
-        | _ -> Env.find_node_opt env hash
-      in
+      let value = match v with Value (_, v, None) -> Some v | _ -> None in
       let map = match v with Map m -> Some m | _ -> None in
       let findv_cache = None in
       let info = { hash; map; value; findv_cache; env } in
@@ -786,7 +798,7 @@ module Make (P : Private.S) = struct
           P.Node.find ?env ?hook (P.Repo.node_t repo) k >|= function
           | None -> Error (`Dangling_hash k)
           | Some v as some_v ->
-              Env.add_node t.info.env (Some k) v;
+              Env.add_node t.info.env k v;
               if cache then t.info.value <- some_v;
               Ok v)
 
@@ -2194,8 +2206,8 @@ module Make (P : Private.S) = struct
     let to_tree t = tree_of_proof (state t) (fun x -> x) ~env:(Env.empty ())
   end
 
-  type proof_tree = Proof.tree Proof.t
-  type proof_stream = Proof.stream Proof.t
+  type proof_tree = Proof.tree Proof.t [@@deriving irmin]
+  type proof_stream = Proof.stream Proof.t [@@deriving irmin]
 
   let produce_proof_aux ~init ~proof repo kinded_hash (f : t -> t Lwt.t) =
     let env = init () in
@@ -2220,16 +2232,17 @@ module Make (P : Private.S) = struct
     produce_proof_aux ~init:Env.track_reads_as_list ~proof:(fun env _ ->
         Env.to_stream_exn env)
 
-  let verify_proof_aux ~tree ~err p f =
+  let verify_proof_aux ~tree ~err ~finalize p f =
     let before = Proof.before p in
     let after = Proof.after p in
-    let tree = tree p in
+    let tree_before = tree p in
     (* first check that [before] corresponds to [tree]'s hash. *)
-    if not (equal_kinded_hash before (hash ~cache:false tree)) then
+    if not (equal_kinded_hash before (hash ~cache:false tree_before)) then
       err "verify_proof: invalid before hash";
     Lwt.catch
       (fun () ->
-        let+ tree_after = f tree in
+        let+ tree_after = f tree_before in
+        finalize (get_env tree_before);
         (* then check that [after] corresponds to [tree_after]'s hash. *)
         if not (equal_kinded_hash after (hash tree_after)) then
           err "verify_proof: invalid before hash";
@@ -2244,10 +2257,20 @@ module Make (P : Private.S) = struct
         | e -> raise e)
 
   let verify_proof =
-    verify_proof_aux ~tree:(fun p -> Proof.to_tree p) ~err:Proof.bad_proof_exn
+    verify_proof_aux
+      ~tree:(fun p -> Proof.to_tree p)
+      ~err:Proof.bad_proof_exn
+      ~finalize:(fun _ -> ())
 
   let verify_stream =
-    verify_proof_aux ~err:Proof.bad_stream_exn ~tree:(fun p ->
+    verify_proof_aux ~err:Proof.bad_stream_exn
+      ~finalize:(fun env ->
+        match !env with
+        | Read_stream s ->
+            if not (Queue.is_empty s) then
+              Fmt.kstr Proof.bad_stream_exn "not empty %a" Env.pp_stream s
+        | _ -> assert false)
+      ~tree:(fun p ->
         let env = Env.of_stream (Proof.state p) in
         import_with_env ~env None (Proof.before p))
 end

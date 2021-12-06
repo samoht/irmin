@@ -425,8 +425,8 @@ module type Tree = sig
     val of_private_node : P.Repo.t -> P.Node.value -> node
     val to_private_node : node -> P.Node.value or_error Lwt.t
 
-    type proof_tree = Proof.tree Proof.t
-    type proof_stream = Proof.stream Proof.t
+    type proof_tree = Proof.tree Proof.t [@@deriving irmin]
+    type proof_stream = Proof.stream Proof.t [@@deriving irmin]
 
     val produce_proof :
       P.Repo.t -> kinded_hash -> (t -> t Lwt.t) -> proof_tree Lwt.t
