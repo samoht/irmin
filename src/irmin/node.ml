@@ -1,7 +1,7 @@
 (*
  * Copyright (c) 2013      Louis Gesbert     <louis.gesbert@ocamlpro.com>
  * Copyright (c) 2013-2017 Thomas Gazagnaire <thomas@gazagnaire.org>
- *
+l *
  * Permission to use, copy, modify, and distribute this software for any
  * purpose with or without fee is hereby granted, provided that the above
  * copyright notice and this permission notice appear in all copies.
@@ -131,18 +131,36 @@ struct
   let entries e = List.rev_map (fun (_, e) -> e) (StepMap.bindings e)
   let t = Type.map Type.(list entry_t) of_entries entries
 
-  type proof = (hash, step, value) Proof.t [@@deriving irmin]
+  type proof =
+    [ `Blinded of hash
+    | `Values of (step * value) list
+    | `Inode of int * (int * proof) list ]
+  [@@deriving irmin]
 
   let to_proof (t : t) : proof =
     let e = List.map of_entry (entries t) in
-    Values e
+    `Values e
 
   let of_proof (t : proof) =
     match t with
-    | Blinded _ | Inode _ -> bad_proof_exn "of_proof"
-    | Values e ->
+    | `Blinded _ | `Inode _ -> bad_proof_exn "of_proof"
+    | `Values e ->
         let e = List.map to_entry e in
         of_entries e
+
+  type kinded_hash = [ `Contents of hash * metadata | `Node of hash ]
+  [@@deriving irmin]
+
+  type stream_elt =
+    [ `Empty
+    | `Node of (step * kinded_hash) list
+    | `Inode of int * (int * hash) list ]
+  [@@deriving irmin]
+
+  type stream = stream_elt Seq.t [@@deriving irmin]
+
+  let of_inode ~find:_ _ _ = Proof.bad_stream_exn "of_inode"
+  let to_stream_elt t : stream_elt = `Node (list t)
 end
 
 module Store
@@ -170,7 +188,7 @@ struct
   type value = S.value
 
   let mem (_, t) = S.mem t
-  let find (_, t) = S.find t
+  let find ?env ?hook (_, t) = S.find ?env ?hook t
   let clear (_, t) = S.clear t
   let add (_, t) = S.add t
   let unsafe_add (_, t) = S.unsafe_add t
@@ -415,11 +433,18 @@ module V1 (N : S with type step = string) = struct
   type value = N.value
   type t = { n : N.t; entries : (step * value) list }
   type proof = N.proof [@@deriving irmin]
+  type stream = N.stream [@@deriving irmin]
+  type stream_elt = N.stream_elt [@@deriving irmin]
 
   let import n = { n; entries = N.list n }
   let export t = t.n
   let to_proof t = N.to_proof t.n
   let of_proof p = import (N.of_proof p)
+  let to_stream_elt t = N.to_stream_elt t.n
+
+  let of_inode ~find l p =
+    let find k = Option.map export (find k) in
+    import (N.of_inode ~find l p)
 
   let of_seq entries =
     let n = N.of_seq entries in

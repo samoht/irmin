@@ -55,7 +55,7 @@ struct
   let add (_, t) = S.add t
   let unsafe_add (_, t) = S.unsafe_add t
   let mem (_, t) = S.mem t
-  let find (_, t) = S.find t
+  let find ?env ?hook (_, t) = S.find ?env ?hook t
   let clear (_, t) = S.clear t
   let merge_node (t, _) = Merge.f (N.merge t)
   let pp_key = Type.pp S.Key.t

@@ -47,9 +47,15 @@ module Read_only (K : Irmin.Type.S) (V : Irmin.Type.S) = struct
   let batch t f = f (cast t)
   let pp_key = Irmin.Type.pp K.t
 
-  let find { t; _ } key =
+  let find ?env ?hook { t; _ } key =
     Log.debug (fun f -> f "find %a" pp_key key);
-    try Lwt.return_some (KMap.find key t) with Not_found -> Lwt.return_none
+    let v =
+      match env with
+      | Some f -> f key
+      | None -> ( try Some (KMap.find key t) with Not_found -> None)
+    in
+    Option.iter (fun f -> f key v) hook;
+    Lwt.return v
 
   let mem { t; _ } key =
     Log.debug (fun f -> f "mem %a" pp_key key);

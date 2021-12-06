@@ -129,17 +129,17 @@ struct
     if freeze then t.newies <- k :: t.newies
 
   (** Everything is in current upper, no need to look in next upper. *)
-  let find t k =
+  let find ?env ?hook t k =
     let current = current_upper t in
     Log.debug (fun l -> l "find in %a" pp_current_upper t);
-    U.find current k >>= function
+    U.find ?env ?hook current k >>= function
     | Some v -> Lwt.return_some v
     | None -> (
         match t.lower with
         | None -> Lwt.return_none
         | Some lower ->
             Log.debug (fun l -> l "find in lower");
-            L.find lower k)
+            L.find ?env ?hook lower k)
 
   let unsafe_find ~check_integrity t k =
     let current = current_upper t in

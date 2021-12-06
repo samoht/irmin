@@ -69,7 +69,13 @@ struct
     module Node = struct
       module Pa = Layered_store.Pack_maker (H) (Index) (Pack)
       module Node = Node (H) (P) (M)
-      module CA = Inode_layers.Make (Config) (H) (Pa) (Node)
+
+      module CA = struct
+        include Inode_layers.Make (Config) (H) (Pa) (Node)
+
+        let find_with_env ~env:_ t k = find t k
+      end
+
       include Irmin.Private.Node.Store (Contents) (P) (M) (CA)
     end
 

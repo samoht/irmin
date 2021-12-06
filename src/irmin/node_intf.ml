@@ -18,27 +18,6 @@
 open! Import
 open S
 
-module Proof = struct
-  type ('hash, 'step, 'value) t =
-    | Blinded of 'hash
-    | Values of ('step * 'value) list
-    | Inode of { length : int; proofs : (int * ('hash, 'step, 'value) t) list }
-
-  (* TODO(craigfe): fix [ppx_irmin] for recursive types with type parameters. *)
-  let t hash_t step_t value_t =
-    let open Type in
-    mu (fun t ->
-        variant "proof" (fun blinded values inode -> function
-          | Blinded x1 -> blinded x1
-          | Values x1 -> values x1
-          | Inode { length; proofs } -> inode (length, proofs))
-        |~ case1 "Blinded" hash_t (fun x1 -> Blinded x1)
-        |~ case1 "Values" [%typ: (step * value) list] (fun x1 -> Values x1)
-        |~ case1 "Inode" [%typ: int * (int * t) list] (fun (length, proofs) ->
-               Inode { length; proofs })
-        |> sealv)
-end
-
 module type S = sig
   (** {1 Node values} *)
 
@@ -122,11 +101,27 @@ module type S = sig
 
   (** {1 Proofs} *)
 
-  type proof = (hash, step, value) Proof.t [@@deriving irmin]
-  (** The type for proof trees. *)
+  type proof =
+    [ `Blinded of hash
+    | `Values of (step * value) list
+    | `Inode of int * (int * proof) list ]
+  [@@deriving irmin]
 
   val to_proof : t -> proof
   val of_proof : proof -> t
+
+  type kinded_hash := [ `Contents of hash * metadata | `Node of hash ]
+
+  type stream_elt =
+    [ `Empty
+    | `Node of (step * kinded_hash) list
+    | `Inode of int * (int * hash) list ]
+  [@@deriving irmin]
+
+  type stream = stream_elt Seq.t [@@deriving irmin]
+
+  val of_inode : find:(hash -> t option) -> int -> (int * hash) list -> t
+  val to_stream_elt : t -> stream_elt
 end
 
 module type Maker = functor
@@ -262,8 +257,6 @@ module type GRAPH = sig
 end
 
 module type Node = sig
-  module Proof = Proof
-
   module type S = S
   module type Maker = Maker
 
@@ -278,6 +271,9 @@ module type Node = sig
         with type hash = N.hash
          and type step = N.step
          and type metadata = N.metadata
+         and type proof = N.proof
+         and type stream_elt = N.stream_elt
+         and type stream = N.stream
 
     val import : N.t -> t
     val export : t -> N.t
@@ -292,6 +288,10 @@ module type Node = sig
       (P : Path.S)
       (M : METADATA) (N : sig
         include CONTENT_ADDRESSABLE_STORE with type key = C.key
+
+        val find_with_env :
+          env:(key -> value option) -> [> read ] t -> key -> value option Lwt.t
+
         module Key : Hash.S with type t = key
 
         module Val :

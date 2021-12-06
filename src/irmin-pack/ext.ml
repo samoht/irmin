@@ -56,6 +56,8 @@ struct
       module CA = struct
         module Inter = Inode.Make_internal (Config) (H) (Node)
         include Inode.Make_persistent (H) (Node) (Inter) (Pack)
+
+        let find_with_env ~env:_ t k = find t k
       end
 
       include Irmin.Private.Node.Store (Contents) (P) (M) (CA)

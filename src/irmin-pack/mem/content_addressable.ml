@@ -117,13 +117,24 @@ module Maker (K : Irmin.Hash.S) = struct
           Fmt.invalid_arg "corrupted value: got %a, expecting %a" pp_key k'
             pp_key k
 
-    let find t k =
+    let find ?env ?hook t k =
       Log.debug (fun f -> f "find %a" pp_key k);
-      find t k |> function
-      | Ok r -> Lwt.return r
-      | Error (k, k') ->
-          Fmt.kstr Lwt.fail_invalid_arg "corrupted value: got %a, expecting %a"
-            pp_key k' pp_key k
+      let v =
+        match env with
+        | Some f -> Ok (f k)
+        | None -> (
+            find t k |> function
+            | Ok _ as r -> r
+            | Error (k, k') ->
+                Fmt.kstr
+                  (fun x -> Error x)
+                  "corrupted value: got %a, expecting %a" pp_key k' pp_key k)
+      in
+      match v with
+      | Ok v ->
+          Option.iter (fun f -> f k v) hook;
+          Lwt.return v
+      | Error x -> Lwt.fail_invalid_arg x
 
     let unsafe_mem t k =
       Log.debug (fun f -> f "mem %a" pp_key k);

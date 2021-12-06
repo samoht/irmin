@@ -288,7 +288,7 @@ module Make (P : Private.S) = struct
       | Inode _ -> bad_stream_exn "inode"
       | exception Queue.Empty -> bad_stream_exn "empty"
 
-    let node_of_stream (s : stream) h =
+    let rec node_of_stream (s : stream) h =
       let bad_stream_exn s = bad_stream_exn ("node_of_stream: " ^ s) in
       match Queue.take s with
       | Empty -> None
@@ -296,7 +296,11 @@ module Make (P : Private.S) = struct
           let n = P.Node.Val.of_list n in
           check_node_integrity n h;
           Some n
-      | Inode _ -> failwith "TODO"
+      | Inode i ->
+          let find = node_of_stream s in
+          let n = P.Node.Val.of_inode ~find i.length i.proofs in
+          check_node_integrity n h;
+          Some n
       | Contents _ -> bad_stream_exn "contents"
       | exception Queue.Empty -> bad_stream_exn "empty"
 
@@ -312,19 +316,45 @@ module Make (P : Private.S) = struct
       | Write_stream s, Some _, Some v -> Queue.add (Tree_proof.Contents v) s
       | _ -> ()
 
-    let find_node (t : t) h =
-      match (!t, h) with
-      | Set s, Some h -> Hashes.find_opt s.nodes h
-      | Read_stream s, Some h -> node_of_stream s h
-      | _ -> None
+    let add_stream s = function
+      | None -> Queue.add Tree_proof.Empty s
+      | Some n -> (
+          match P.Node.Val.to_stream_elt n with
+          | `Empty -> assert false
+          | `Node n -> Queue.add (Tree_proof.Node n) s
+          | `Inode (length, proofs) ->
+              let i = Tree_proof.Inode { length; proofs } in
+              Queue.add i s)
 
     let add_node (t : t) h n =
-      match (!t, h) with
-      | Set s, Some h -> Hashes.replace s.nodes h n
-      | Write_stream s, Some _ ->
-          let n = P.Node.Val.list n in
-          Queue.add (Tree_proof.Node n) s
+      match !t with
+      | Set s -> Hashes.replace s.nodes h n
+      | Write_stream s -> add_stream s (Some n)
       | _ -> ()
+
+    let find_node (t : t) h =
+      match !t with
+      | Set s -> Hashes.find_opt s.nodes h
+      | Read_stream s -> node_of_stream s h
+      | _ -> None
+
+    let find_node_opt (t : t) h =
+      match h with None -> None | Some h -> find_node t h
+
+    let add_node_opt (t : t) h n =
+      match h with None -> () | Some h -> add_node t h n
+
+    (* Set-up the right environment when verifying the stream *)
+    let env (t : t) =
+      match !t with
+      | Read_stream s -> Some (fun h -> node_of_stream s h)
+      | _ -> None
+
+    (* Set-up the right hooks when building a stream *)
+    let hook (t : t) =
+      match !t with
+      | Write_stream s -> Some (fun _ v -> add_stream s v)
+      | _ -> None
 
     (* x' = y' <- x union y *)
     let merge (x : t) (y : t) =
@@ -332,12 +362,12 @@ module Make (P : Private.S) = struct
       | Empty, Empty -> ()
       | Empty, (_ as y) -> x := y
       | (_ as x), Empty -> y := x
-      | Set a, Set b -> if a == b then () else invalid_arg "merge sets"
+      | Set a, Set b -> if a == b then () else invalid_arg "Env.merge sets"
       | Read_stream a, Read_stream b ->
-          if a == b then () else invalid_arg "merge read_stream"
+          if a == b then () else invalid_arg "Env.merge read_stream"
       | Write_stream a, Write_stream b ->
-          if a == b then () else invalid_arg "merge write_stream"
-      | _ -> failwith "TODO: merge/3"
+          if a == b then () else invalid_arg "Env.merge write_stream"
+      | _ -> invalid_arg "Env.merge"
   end
 
   module Contents = struct
@@ -375,7 +405,6 @@ module Make (P : Private.S) = struct
         match v with Value v -> Some v | _ -> Env.find_contents env hash
       in
       let info = { hash; value; env } in
-      Env.add_contents env hash value;
       { v; info }
 
     let export ?clear:(c = true) repo t k =
@@ -429,9 +458,8 @@ module Make (P : Private.S) = struct
       P.Contents.find (P.Repo.contents_t repo) k >|= function
       | None -> Error (`Dangling_hash k)
       | Some v as some_v ->
-          if cache then (
-            t.info.value <- some_v;
-            Env.add_contents t.info.env (Some k) some_v);
+          Env.add_contents t.info.env (Some k) some_v;
+          if cache then t.info.value <- some_v;
           Ok v
 
     let to_value_aux ~cache ~value_of_hash ~return t =
@@ -585,10 +613,8 @@ module Make (P : Private.S) = struct
       let hash = match v with Hash (_, k) -> Some k | _ -> None in
       let value =
         match v with
-        | Value (_, v, None) ->
-            Env.add_node env hash v;
-            Some v
-        | _ -> Env.find_node env hash
+        | Value (_, v, None) -> Some v
+        | _ -> Env.find_node_opt env hash
       in
       let map = match v with Map m -> Some m | _ -> None in
       let findv_cache = None in
@@ -623,7 +649,7 @@ module Make (P : Private.S) = struct
           v
       | _, (Some _ as v) -> v
       | _ -> (
-          match Env.find_node t.info.env (cached_hash t) with
+          match Env.find_node_opt t.info.env (cached_hash t) with
           | Some _ as v ->
               t.info.value <- v;
               v
@@ -755,12 +781,13 @@ module Make (P : Private.S) = struct
       | Some v -> Lwt.return_ok v
       | None -> (
           cnt.node_find <- cnt.node_find + 1;
-          P.Node.find (P.Repo.node_t repo) k >|= function
+          let env = Env.env t.info.env in
+          let hook = Env.hook t.info.env in
+          P.Node.find ?env ?hook (P.Repo.node_t repo) k >|= function
           | None -> Error (`Dangling_hash k)
           | Some v as some_v ->
-              if cache then (
-                t.info.value <- some_v;
-                Env.add_node t.info.env (Some k) v);
+              Env.add_node t.info.env (Some k) v;
+              if cache then t.info.value <- some_v;
               Ok v)
 
     let to_value_aux ~cache ~value_of_hash ~return t =
@@ -1964,6 +1991,7 @@ module Make (P : Private.S) = struct
     type tree_proof = tree
 
     let bad_proof_exn c = Proof.bad_proof_exn ("Irmin.Tree." ^ c)
+    let bad_stream_exn c = Proof.bad_stream_exn ("Irmin.Tree." ^ c)
 
     type node_proof = P.Node.Val.proof
     (** The type of tree proofs. *)
@@ -2015,9 +2043,9 @@ module Make (P : Private.S) = struct
         type a. node -> node_proof -> (tree_proof -> a) -> a =
      fun node p k ->
       match p with
-      | Blinded h -> k (Blinded_node h)
-      | Inode { length; proofs } -> proof_of_inode node length proofs k
-      | Values vs -> proof_of_values node vs k
+      | `Blinded h -> k (Blinded_node h)
+      | `Inode (length, proofs) -> proof_of_inode node length proofs k
+      | `Values vs -> proof_of_values node vs k
 
     and proof_of_inode :
         type a. node -> int -> (int * node_proof) list -> (tree_proof -> a) -> a
@@ -2056,7 +2084,7 @@ module Make (P : Private.S) = struct
 
     let hash_of_node_proof (p : node_proof) =
       match p with
-      | Blinded h -> h
+      | `Blinded h -> h
       | _ ->
           let v = P.Node.Val.of_proof p in
           P.Node.Key.hash v
@@ -2114,7 +2142,7 @@ module Make (P : Private.S) = struct
             node_proof_of_proof p (fun p -> aux ((i, p) :: acc) rest k)
       in
       aux [] proofs @@ fun p ->
-      let p = Irmin_node.Proof.Inode { length = len; proofs = p } in
+      let p = `Inode (len, p) in
       let n = P.Node.Val.of_proof p in
       k (Node.of_value ~env None n)
 
@@ -2126,7 +2154,7 @@ module Make (P : Private.S) = struct
             "Proof.to_node_proof: found Blinded_contents inside an inode"
       | Contents _ ->
           bad_proof_exn "Proof.to_node_proof: found Contents inside an inode"
-      | Blinded_node x -> k (Blinded x)
+      | Blinded_node x -> k (`Blinded x)
       | Inode { length; proofs } -> node_proof_of_inode length proofs k
       | Node n -> node_proof_of_node n k
 
@@ -2134,7 +2162,7 @@ module Make (P : Private.S) = struct
         type a. int -> (int * tree_proof) list -> (node_proof -> a) -> a =
      fun length proofs k ->
       let rec aux acc = function
-        | [] -> k (Inode { length; proofs = List.rev acc })
+        | [] -> k (`Inode (length, List.rev acc))
         | (i, p) :: rest ->
             node_proof_of_proof p (fun p -> aux ((i, p) :: acc) rest)
       in
@@ -2144,7 +2172,7 @@ module Make (P : Private.S) = struct
         type a. (step * tree_proof) list -> (node_proof -> a) -> a =
      fun node k ->
       let rec aux acc = function
-        | [] -> k (Values (List.rev acc))
+        | [] -> k (`Values (List.rev acc))
         | (s, n) :: rest ->
             node_value_of_proof n (fun n -> aux ((s, n) :: acc) rest)
       in
@@ -2192,32 +2220,34 @@ module Make (P : Private.S) = struct
     produce_proof_aux ~init:Env.track_reads_as_list ~proof:(fun env _ ->
         Env.to_stream_exn env)
 
-  let verify_proof_aux ~tree p f =
+  let verify_proof_aux ~tree ~err p f =
     let before = Proof.before p in
     let after = Proof.after p in
     let tree = tree p in
     (* first check that [before] corresponds to [tree]'s hash. *)
     if not (equal_kinded_hash before (hash ~cache:false tree)) then
-      Proof.bad_proof_exn "verify_proof: invalid before hash";
+      err "verify_proof: invalid before hash";
     Lwt.catch
       (fun () ->
         let+ tree_after = f tree in
         (* then check that [after] corresponds to [tree_after]'s hash. *)
         if not (equal_kinded_hash after (hash tree_after)) then
-          Proof.bad_proof_exn "verify_proof: invalid before hash";
+          err "verify_proof: invalid before hash";
         tree_after)
       (function
         | Pruned_hash h ->
             (* finaly check that [f] only access valid parts of the proof. *)
-            Fmt.kstr Proof.bad_proof_exn
+            Fmt.kstr err
               "verify_proof: %s is trying to read through a blinded node (%a)"
-              h.context pp_hash h.hash
+              h.context pp_hash h.hash;
+            assert false
         | e -> raise e)
 
-  let verify_proof = verify_proof_aux ~tree:(fun p -> Proof.to_tree p)
+  let verify_proof =
+    verify_proof_aux ~tree:(fun p -> Proof.to_tree p) ~err:Proof.bad_proof_exn
 
   let verify_stream =
-    verify_proof_aux ~tree:(fun p ->
+    verify_proof_aux ~err:Proof.bad_stream_exn ~tree:(fun p ->
         let env = Env.of_stream (Proof.state p) in
         import_with_env ~env None (Proof.before p))
 end

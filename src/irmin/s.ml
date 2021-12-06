@@ -75,9 +75,19 @@ module type CONTENT_ADDRESSABLE_STORE = sig
   val mem : [> read ] t -> key -> bool Lwt.t
   (** [mem t k] is true iff [k] is present in [t]. *)
 
-  val find : [> read ] t -> key -> value option Lwt.t
+  val find :
+    ?env:(key -> value option) ->
+    ?hook:(key -> value option -> unit) ->
+    [> read ] t ->
+    key ->
+    value option Lwt.t
   (** [find t k] is [Some v] if [k] is associated to [v] in [t] and [None] is
-      [k] is not present in [t]. *)
+      [k] is not present in [t].
+
+      [find ~env ~hook k] is like [find t k] but use [env] to resolve keys calls
+      and [hook] to register any found objects. This is mainly useful for
+      backends that could call [find] recursively on structured objects, like
+      inode [irmin-pack]. *)
 
   val add : [> write ] t -> value -> key Lwt.t
   (** Write the contents of a value to the store. It's the responsibility of the
@@ -120,7 +130,12 @@ module type APPEND_ONLY_STORE = sig
   val mem : [> read ] t -> key -> bool Lwt.t
   (** [mem t k] is true iff [k] is present in [t]. *)
 
-  val find : [> read ] t -> key -> value option Lwt.t
+  val find :
+    ?env:(key -> value option) ->
+    ?hook:(key -> value option -> unit) ->
+    [> read ] t ->
+    key ->
+    value option Lwt.t
   (** [find t k] is [Some v] if [k] is associated to [v] in [t] and [None] is
       [k] is not present in [t]. *)
 

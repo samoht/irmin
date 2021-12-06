@@ -35,8 +35,8 @@ struct
   let pp_key = Type.pp K.t
   let equal_hash = Type.(unstage (equal K.t))
 
-  let find t k =
-    find t k >>= function
+  let find ?env ?hook t k =
+    find ?env ?hook t k >>= function
     | None -> Lwt.return_none
     | Some v as r ->
         let k' = hash v in

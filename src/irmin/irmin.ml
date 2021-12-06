@@ -49,9 +49,9 @@ functor
       check_not_closed t;
       S.mem t.t k
 
-    let find t k =
+    let find ?env ?hook t k =
       check_not_closed t;
-      S.find t.t k
+      S.find ?env ?hook t.t k
 
     let add t v =
       check_not_closed t;
@@ -184,6 +184,8 @@ struct
           module Key = Hash
           module Val = N (H) (P) (M)
           include CA (Key) (Val)
+
+          let find_with_env ~env:_ t k = find t k
         end
 
         include Node.Store (Contents) (P) (M) (CA)
@@ -286,6 +288,8 @@ struct
         module Key = Hash
         module Val = N
         include CA (Key) (Val)
+
+        let find_with_env ~env:_ t k = find t k
       end
 
       include Node.Store (Contents) (P) (M) (CA)

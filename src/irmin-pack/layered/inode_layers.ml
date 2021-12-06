@@ -39,13 +39,19 @@ struct
   let mem t k = P.mem t k
   let unsafe_find = P.unsafe_find
 
-  let find t k =
-    P.find t k >|= function
-    | None -> None
-    | Some v ->
-        let find = unsafe_find ~check_integrity:true t in
-        let v = Val.of_raw find v in
-        Some v
+  let find ?env ?hook t k =
+    let find =
+      match env with None -> unsafe_find ~check_integrity:true t | Some f -> f
+    in
+    let v =
+      match find k with
+      | None -> None
+      | Some v ->
+          let v = Val.of_raw find v in
+          Some v
+    in
+    Option.iter (fun f -> f k v) hook;
+    Lwt.return v
 
   let hash v = Val.hash v
   let equal_hash = Irmin.Type.(unstage (equal H.t))

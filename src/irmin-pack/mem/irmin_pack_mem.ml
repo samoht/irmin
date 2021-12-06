@@ -65,6 +65,7 @@ struct
         module CA = Pack.Make (Inter.Raw)
         include Irmin_pack.Inode.Make (H) (Node) (Inter) (CA)
 
+        let find_with_env ~env:_ t k = find t k
         let v = CA.v
       end
 

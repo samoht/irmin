@@ -763,6 +763,17 @@ struct
       | Unsorted_pointers t -> Error (`Unsorted_pointers t)
       | Blinded_root -> Error `Blinded_root
 
+    let of_inode la length pointers : _ t =
+      let hash v = Bin.V.hash (to_bin_v la v) in
+      let entries = Array.make Conf.entries None in
+      List.iter
+        (fun (index, hash) ->
+          let ptr = Ptr.of_target la hash in
+          entries.(index) <- Some ptr)
+        pointers;
+      let v = Tree { depth = 0; length; entries } in
+      { hash = lazy (hash v); stable = false; v }
+
     let hash t = Lazy.force t.hash
 
     let is_root t =
@@ -1075,13 +1086,27 @@ struct
 
     let is_tree t = match t.v with Tree _ -> true | Values _ -> false
 
-    type proof = (hash, step, value) Irmin.Private.Node.Proof.t
+    type proof =
+      [ `Blinded of hash
+      | `Values of (step * value) list
+      | `Inode of int * (int * proof) list ]
     [@@deriving irmin]
+
+    type kinded_hash = [ `Contents of hash * metadata | `Node of hash ]
+    [@@deriving irmin]
+
+    type stream_elt =
+      [ `Empty
+      | `Node of (step * kinded_hash) list
+      | `Inode of int * (int * hash) list ]
+    [@@deriving irmin]
+
+    type stream = stream_elt Seq.t [@@deriving irmin]
 
     module Proof = struct
       let rec proof_of_concrete h : Concrete.t -> proof = function
-        | Blinded -> Blinded (Lazy.force h)
-        | Values vs -> Values (List.map Concrete.of_entry vs)
+        | Blinded -> `Blinded (Lazy.force h)
+        | Values vs -> `Values (List.map Concrete.of_entry vs)
         | Tree tr ->
             let proofs =
               List.fold_left
@@ -1091,14 +1116,14 @@ struct
                   e :: acc)
                 [] (List.rev tr.pointers)
             in
-            Inode { length = tr.length; proofs }
+            `Inode (tr.length, proofs)
 
       let hash_v v = Bin.V.hash (to_bin_v Truncated v)
 
       let rec hash : int -> proof -> hash =
        fun depth -> function
-        | Values l -> hash_v (Values (StepMap.of_list l))
-        | Inode { length; proofs } ->
+        | `Values l -> hash_v (Values (StepMap.of_list l))
+        | `Inode (length, proofs) ->
             let es =
               List.fold_left
                 (fun acc (index, proof) ->
@@ -1110,12 +1135,12 @@ struct
             List.iter (fun (index, ptr) -> entries.(index) <- Some ptr) es;
             let v : truncated_ptr v = Tree { depth; length; entries } in
             hash_v v
-        | Blinded h -> h
+        | `Blinded h -> h
 
       let rec concrete_of_proof depth : proof -> Concrete.t = function
-        | Blinded _ -> Concrete.Blinded
-        | Values vs -> Concrete.Values (List.map Concrete.to_entry vs)
-        | Inode { length; proofs } ->
+        | `Blinded _ -> Concrete.Blinded
+        | `Values vs -> Concrete.Values (List.map Concrete.to_entry vs)
+        | `Inode (length, proofs) ->
             let pointers =
               List.fold_left
                 (fun acc (index, proof) ->
@@ -1394,6 +1419,36 @@ struct
       apply t { f = (fun la v -> I.Proof.to_proof la v) }
 
     let of_proof (p : proof) = Truncated (I.Proof.of_proof p)
+
+    let of_inode find' len entries : t =
+      let rec find h =
+        match find' h with None -> None | Some v -> Some (I.of_bin la v)
+      and la = I.Partial find in
+      let v = I.of_inode la len entries in
+      Partial (la, v)
+
+    let to_stream t : I.stream_elt =
+      let to_node la v = `Node (List.of_seq (I.seq la v)) in
+      let aux la (v : _ I.t) =
+        if v.stable then to_node la v
+        else
+          match v.v with
+          | I.Values _ -> to_node la v
+          | I.Tree v ->
+              let entries = ref [] in
+              for i = Array.length v.entries - 1 downto 0 do
+                match v.entries.(i) with
+                | None -> ()
+                | Some ptr ->
+                    let h = I.Ptr.hash la ptr in
+                    entries := (i, h) :: !entries
+              done;
+              `Inode (v.length, !entries)
+      in
+      match t with
+      | Partial (la, v) -> aux la v
+      | Total v -> aux Total v
+      | Truncated v -> aux Truncated v
   end
 end
 
@@ -1417,18 +1472,22 @@ struct
 
   let mem t k = Pack.mem t k
 
-  let find t k =
-    Pack.find t k >|= function
-    | None -> None
+  let find_with_env ?env t k =
+    let find =
+      match env with
+      | None -> Pack.unsafe_find ~check_integrity:true t
+      | Some f -> f
+    in
+    match find k with
+    | None -> Lwt.return None
     | Some v ->
-        let find = Pack.unsafe_find ~check_integrity:true t in
         let v = Val.of_raw find v in
-        Some v
+        Lwt.return (Some v)
+
+  let find t k = find_with_env t k
 
   let save t v =
-    let add k v =
-      Pack.unsafe_append ~ensure_unique:true ~overcommit:false t k v
-    in
+    let add = Pack.unsafe_append ~ensure_unique:true ~overcommit:false t in
     Val.save ~add ~mem:(Pack.unsafe_mem t) v
 
   let hash v = Val.hash v
