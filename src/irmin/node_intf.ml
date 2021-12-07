@@ -110,18 +110,25 @@ module type S = sig
   val to_proof : t -> proof
   val of_proof : proof -> t
 
-  type kinded_hash := [ `Contents of hash * metadata | `Node of hash ]
-
   type stream_elt =
-    [ `Empty
-    | `Node of (step * kinded_hash) list
-    | `Inode of int * (int * hash) list ]
+    [ `Empty | `Node of (step * value) list | `Inode of int * (int * hash) list ]
   [@@deriving irmin]
 
   type stream = stream_elt Seq.t [@@deriving irmin]
 
-  val of_inode : find:(hash -> t option) -> int -> (int * hash) list -> t
+  val of_values : depth:int -> (step * value) list -> t
+
+  val of_inode :
+    find:(depth:int -> hash -> t option) ->
+    depth:int ->
+    length:int ->
+    (int * hash) list ->
+    t
+
   val to_stream_elt : t -> stream_elt
+
+  exception Dangling_hash of { context : string; hash : hash }
+  exception Pruned_hash of { context : string; hash : hash }
 end
 
 module type Maker = functor

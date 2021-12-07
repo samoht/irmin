@@ -229,7 +229,7 @@ module Make (P : Private.S) = struct
     type effects =
       | Empty
       | Set of set
-      | Read_stream of stream
+      | Read_stream of (set * stream)
       | Write_stream of stream
     [@@deriving irmin]
 
@@ -241,14 +241,14 @@ module Make (P : Private.S) = struct
       match !t with
       | Empty -> 0
       | Set s -> Hashes.length s.contents + Hashes.length s.nodes
-      | Read_stream s | Write_stream s -> Queue.length s
+      | Read_stream (_, s) | Write_stream s -> Queue.length s
 
     let empty () : t = ref Empty
     let is_empty (t : t) = !t = Empty
     let set (t : t) = match !t with Set s -> Some s | _ -> None
 
     let stream (t : t) =
-      match !t with Read_stream s | Write_stream s -> Some s | _ -> None
+      match !t with Read_stream (_, s) | Write_stream s -> Some s | _ -> None
 
     let to_stream_exn (t : t) : Tree_proof.stream =
       match !t with
@@ -257,13 +257,15 @@ module Make (P : Private.S) = struct
       | Set _ -> failwith "to_stream_exn: set"
       | Empty -> failwith "to_stream_exn: empty"
 
+    let empty_set () = { contents = Hashes.create 13; nodes = Hashes.create 13 }
+
     let of_stream (s : Tree_proof.stream) =
       let s = Queue.of_seq s in
       Fmt.epr "XXX of_stream %a\n" pp_stream s;
-      ref (Read_stream s)
+      ref (Read_stream (empty_set (), s))
 
     let track_reads_as_sets () =
-      let c = { contents = Hashes.create 13; nodes = Hashes.create 13 } in
+      let c = empty_set () in
       ref (Set c)
 
     let track_reads_as_list () =
@@ -280,46 +282,61 @@ module Make (P : Private.S) = struct
     let check_node_integrity n h =
       Fmt.epr "XXX check_node_integrity %a %a\n%!" pp_hash h pp_value n;
       cnt.node_hash <- cnt.node_hash + 1;
+      Fmt.epr "XXX 0\n";
       let c = P.Node.Key.hash n in
+      Fmt.epr "XXX 1\n";
       if not (equal_hash c h) then bad_stream_exn "check_node_integrity"
 
-    let contents_of_stream (s : stream) h =
+    let contents_of_stream (set, (s : stream)) h =
       let bad_stream_exn s = bad_stream_exn ("contents_of_stream: " ^ s) in
-      match Queue.take s with
-      | Empty -> None
-      | Contents c ->
-          check_content_integrity c h;
-          Some c
-      | Node _ -> bad_stream_exn "node"
-      | Inode _ -> bad_stream_exn "inode"
-      | exception Queue.Empty -> bad_stream_exn "empty"
+      match Hashes.find_opt set.contents h with
+      | Some _ as c -> c
+      | None -> (
+          match Queue.take s with
+          | Empty -> None
+          | Contents c ->
+              check_content_integrity c h;
+              Hashes.add set.contents h c;
+              Some c
+          | Node _ -> bad_stream_exn "node"
+          | Inode _ -> bad_stream_exn "inode"
+          | exception Queue.Empty -> bad_stream_exn "empty")
 
-    let rec node_of_stream (s : stream) h =
+    let rec node_of_stream ~depth (set, (s : stream)) h =
       let bad_stream_exn s = bad_stream_exn ("node_of_stream: " ^ s) in
-      match Queue.take s with
-      | Empty -> None
-      | Node n ->
-          let n = P.Node.Val.of_list n in
-          check_node_integrity n h;
-          Some n
-      | Inode i ->
-          let find h =
-            Fmt.epr "XXX node_of_stream.find %a\n%!" pp_hash h;
-            node_of_stream s h
-          in
-          let n = P.Node.Val.of_inode ~find i.length i.proofs in
-          check_node_integrity n h;
-          Some n
-      | Contents _ ->
-          Fmt.epr "XXX node_of_stream %a %a\n" pp_stream s pp_hash h;
-          bad_stream_exn "contents"
-      | exception Queue.Empty -> bad_stream_exn "empty"
+      match Hashes.find_opt set.nodes h with
+      | Some _ as v -> v
+      | None -> (
+          match Queue.take s with
+          | Empty -> None
+          | Node n ->
+              let n = P.Node.Val.of_values ~depth n in
+              check_node_integrity n h;
+              Hashes.add set.nodes h n;
+              Fmt.epr "XXX node OK!\n";
+              Some n
+          | Inode i ->
+              let find ~depth h =
+                Fmt.epr "XXX node_of_stream.find %a\n%!" pp_hash h;
+                node_of_stream ~depth (set, s) h
+              in
+              let n =
+                P.Node.Val.of_inode ~find ~depth ~length:i.length i.proofs
+              in
+              check_node_integrity n h;
+              Hashes.add set.nodes h n;
+              Fmt.epr "XXX inode OK!\n";
+              Some n
+          | Contents _ ->
+              Fmt.epr "XXX node_of_stream %a %a\n" pp_stream s pp_hash h;
+              bad_stream_exn "contents"
+          | exception Queue.Empty -> bad_stream_exn "empty")
 
     let find_contents t h =
       match (!t, h) with
       | Set s, Some h -> Hashes.find_opt s.contents h
       | Read_stream s, Some h ->
-          Fmt.epr "XXX Env.find_contents %a %a\n" pp_stream s pp_hash h;
+          Fmt.epr "XXX Env.find_contents %a %a\n" pp_stream (snd s) pp_hash h;
           contents_of_stream s h
       | _ -> None
 
@@ -343,12 +360,15 @@ module Make (P : Private.S) = struct
               Queue.add i s)
 
     let add_node (t : t) h n =
-      match !t with Set s -> Hashes.replace s.nodes h n | _ -> ()
+      match !t with Set s -> Hashes.add s.nodes h n | _ -> ()
 
     let find_node (t : t) h =
       match !t with
       | Set s -> Hashes.find_opt s.nodes h
-      | Read_stream s -> node_of_stream s h
+      | Read_stream s ->
+          let v = node_of_stream s h ~depth:0 in
+          Fmt.epr "XXX node_of_stream: OK\n";
+          v
       | _ -> None
 
     let find_node_opt (t : t) h =
@@ -359,9 +379,9 @@ module Make (P : Private.S) = struct
       match !t with
       | Read_stream s ->
           Some
-            (fun h ->
+            (fun ~depth h ->
               Fmt.epr "XXX env %a\n%!" pp_hash h;
-              node_of_stream s h)
+              node_of_stream s ~depth h)
       | _ -> None
 
     (* Set-up the right hooks when building a stream *)
@@ -791,16 +811,24 @@ module Make (P : Private.S) = struct
     let value_of_hash ~cache t repo k =
       match cached_value t with
       | Some v -> Lwt.return_ok v
-      | None -> (
+      | None ->
           cnt.node_find <- cnt.node_find + 1;
           let env = Env.env t.info.env in
           let hook = Env.hook t.info.env in
-          P.Node.find ?env ?hook (P.Repo.node_t repo) k >|= function
-          | None -> Error (`Dangling_hash k)
-          | Some v as some_v ->
-              Env.add_node t.info.env k v;
-              if cache then t.info.value <- some_v;
-              Ok v)
+          Lwt.catch
+            (fun () ->
+              P.Node.find ?env ?hook (P.Repo.node_t repo) k >|= function
+              | None -> Error (`Dangling_hash k)
+              | Some v as some_v ->
+                  Env.add_node t.info.env k v;
+                  if cache then t.info.value <- some_v;
+                  Ok v)
+            (function
+              | P.Node.Val.Dangling_hash c ->
+                  Lwt.return (Error (`Dangling_hash c.hash))
+              | P.Node.Val.Pruned_hash c ->
+                  Lwt.return (Error (`Pruned_hash c.hash))
+              | e -> Lwt.fail e)
 
     let to_value_aux ~cache ~value_of_hash ~return t =
       let ok x = return (Ok x) in
@@ -956,6 +984,10 @@ module Make (P : Private.S) = struct
             let v = `Node n in
             if cache then add_to_findv_cache t step v;
             Some v
+        | exception P.Node.Val.Dangling_hash { context; hash } ->
+            raise (Dangling_hash { context; hash })
+        | exception P.Node.Val.Pruned_hash { context; hash } ->
+            raise (Pruned_hash { context; hash })
       in
       let of_t () =
         match t.v with
@@ -2210,6 +2242,7 @@ module Make (P : Private.S) = struct
   type proof_stream = Proof.stream Proof.t [@@deriving irmin]
 
   let produce_proof_aux ~init ~proof repo kinded_hash (f : t -> t Lwt.t) =
+    Fmt.epr "XXX PRODUCE PROOF\n";
     let env = init () in
     let tree_before = import_with_env ~env (Some repo) kinded_hash in
     let+ tree_after = f tree_before in
@@ -2233,6 +2266,7 @@ module Make (P : Private.S) = struct
         Env.to_stream_exn env)
 
   let verify_proof_aux ~tree ~err ~finalize p f =
+    Fmt.epr "XXX VERIFY PROOF\n";
     let before = Proof.before p in
     let after = Proof.after p in
     let tree_before = tree p in
@@ -2266,7 +2300,7 @@ module Make (P : Private.S) = struct
     verify_proof_aux ~err:Proof.bad_stream_exn
       ~finalize:(fun env ->
         match !env with
-        | Read_stream s ->
+        | Read_stream (_, s) ->
             if not (Queue.is_empty s) then
               Fmt.kstr Proof.bad_stream_exn "not empty %a" Env.pp_stream s
         | _ -> assert false)

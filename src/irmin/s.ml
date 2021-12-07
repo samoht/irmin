@@ -76,7 +76,7 @@ module type CONTENT_ADDRESSABLE_STORE = sig
   (** [mem t k] is true iff [k] is present in [t]. *)
 
   val find :
-    ?env:(key -> value option) ->
+    ?env:(depth:int -> key -> value option) ->
     ?hook:(key -> value option -> unit) ->
     [> read ] t ->
     key ->
@@ -131,7 +131,7 @@ module type APPEND_ONLY_STORE = sig
   (** [mem t k] is true iff [k] is present in [t]. *)
 
   val find :
-    ?env:(key -> value option) ->
+    ?env:(depth:int -> key -> value option) ->
     ?hook:(key -> value option -> unit) ->
     [> read ] t ->
     key ->

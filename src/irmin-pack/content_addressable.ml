@@ -29,9 +29,9 @@ module Closeable (S : S) = struct
     check_not_closed t;
     S.mem t.t k
 
-  let find t k =
+  let find ?env ?hook t k =
     check_not_closed t;
-    S.find t.t k
+    S.find ?env ?hook t.t k
 
   let add t v =
     check_not_closed t;

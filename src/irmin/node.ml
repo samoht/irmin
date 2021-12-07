@@ -159,8 +159,26 @@ struct
 
   type stream = stream_elt Seq.t [@@deriving irmin]
 
-  let of_inode ~find:_ _ _ = Proof.bad_stream_exn "of_inode"
+  let of_inode ~find:_ ~depth:_ ~length:_ _ = Proof.bad_stream_exn "of_inode"
+  let of_values ~depth:_ l = of_list l
   let to_stream_elt t : stream_elt = `Node (list t)
+
+  exception Dangling_hash of { context : string; hash : hash }
+  exception Pruned_hash of { context : string; hash : hash }
+
+  let pp_hash = Type.pp hash_t
+
+  let () =
+    Printexc.register_printer (function
+      | Dangling_hash { context; hash } ->
+          Some
+            (Fmt.str "Irmin.Node.%s: encountered dangling hash %a" context
+               pp_hash hash)
+      | Pruned_hash { context; hash } ->
+          Some
+            (Fmt.str "Irmin.Node.%s: encountered pruned hash %a" context pp_hash
+               hash)
+      | _ -> None)
 end
 
 module Store
@@ -427,24 +445,20 @@ module V1 (N : S with type step = string) = struct
     let t = Type.like N.hash_t ~bin:(encode_bin, decode_bin, size_of)
   end
 
-  type step = N.step
-  type hash = N.hash [@@deriving irmin]
-  type metadata = N.metadata [@@deriving irmin]
-  type value = N.value
+  include N
+
   type t = { n : N.t; entries : (step * value) list }
-  type proof = N.proof [@@deriving irmin]
-  type stream = N.stream [@@deriving irmin]
-  type stream_elt = N.stream_elt [@@deriving irmin]
 
   let import n = { n; entries = N.list n }
   let export t = t.n
   let to_proof t = N.to_proof t.n
   let of_proof p = import (N.of_proof p)
   let to_stream_elt t = N.to_stream_elt t.n
+  let of_values ~depth l = import (N.of_values ~depth l)
 
-  let of_inode ~find l p =
-    let find k = Option.map export (find k) in
-    import (N.of_inode ~find l p)
+  let of_inode ~find ~depth ~length p =
+    let find ~depth k = Option.map export (find ~depth k) in
+    import (N.of_inode ~find ~depth ~length p)
 
   let of_seq entries =
     let n = N.of_seq entries in

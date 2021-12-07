@@ -47,6 +47,9 @@ struct
 
     let value_t = Node.value_t
     let pp_hash = Irmin.Type.(pp hash_t)
+
+    exception Pruned_hash = Node.Pruned_hash
+    exception Dangling_hash = Node.Dangling_hash
   end
 
   module StepMap = struct
@@ -59,16 +62,7 @@ struct
     let of_list l = List.fold_left (fun acc (k, v) -> add k v acc) empty l
   end
 
-  exception Dangling_hash of { context : string; hash : T.hash }
   exception Max_depth of int
-
-  let () =
-    Printexc.register_printer (function
-      | Dangling_hash { context; hash } ->
-          Some
-            (Fmt.str "Irmin_pack.Inode.%s: encountered dangling hash %a" context
-               T.pp_hash hash)
-      | _ -> None)
 
   (* Binary representation, useful to compute hashes *)
   module Bin = struct
@@ -308,7 +302,9 @@ struct
 
     type _ layout =
       | Total : total_ptr layout
-      | Partial : (hash -> partial_ptr t option) -> partial_ptr layout
+      | Partial :
+          (depth:int -> hash -> partial_ptr t option)
+          -> partial_ptr layout
       | Truncated : truncated_ptr layout
 
     and partial_ptr_target =
@@ -351,8 +347,14 @@ struct
 
       let target :
           type ptr.
-          cache:bool -> force:bool -> string -> ptr layout -> ptr -> ptr t =
-       fun ~cache ~force context layout ->
+          cache:bool ->
+          force:bool ->
+          depth:int ->
+          string ->
+          ptr layout ->
+          ptr ->
+          ptr t =
+       fun ~cache ~force ~depth context layout ->
         match layout with
         | Total -> fun (Total_ptr t) -> t
         | Partial find -> (
@@ -364,17 +366,20 @@ struct
                 entry
             | { target = Lazy _ } as t -> (
                 let h = hash layout t in
-                if not force then raise (Dangling_hash { context; hash = h })
+                if not force then raise (Pruned_hash { context; hash = h })
                 else
-                  match find h with
-                  | None -> Fmt.failwith "%a: unknown key" pp_hash h
+                  match find ~depth h with
+                  | None ->
+                      let e = Printexc.get_callstack 10 in
+                      Printexc.print_raw_backtrace stderr e;
+                      raise (Dangling_hash { context; hash = h })
                   | Some x ->
                       if cache then t.target <- Lazy_loaded x;
                       x))
         | Truncated -> (
             function
             | Intact entry -> entry
-            | Broken h -> raise (Dangling_hash { context; hash = h }))
+            | Broken h -> raise (Pruned_hash { context; hash = h }))
 
       let of_target : type ptr. ptr layout -> ptr t -> ptr = function
         | Total -> fun target -> Total_ptr target
@@ -470,15 +475,15 @@ struct
 
     type cont = off:int -> len:int -> (step * value) Seq.node
 
-    let rec seq_tree layout bucket_seq ~cache : cont -> cont =
+    let rec seq_tree layout bucket_seq ~depth ~cache : cont -> cont =
      fun k ~off ~len ->
       assert (off >= 0);
       assert (len > 0);
       match bucket_seq () with
       | Seq.Nil -> k ~off ~len
-      | Seq.Cons (None, rest) -> seq_tree layout rest ~cache k ~off ~len
+      | Seq.Cons (None, rest) -> seq_tree layout ~depth rest ~cache k ~off ~len
       | Seq.Cons (Some i, rest) ->
-          let trg = Ptr.target ~cache ~force:true "seq_tree" layout i in
+          let trg = Ptr.target ~depth ~cache ~force:true "seq_tree" layout i in
           let trg_len = length trg in
           if off - trg_len >= 0 then
             (* Skip a branch of the inode tree in case the user asked for a
@@ -488,11 +493,13 @@ struct
                because [seq_value] would handles the pagination value by value
                instead. *)
             let off = off - trg_len in
-            seq_tree layout rest ~cache k ~off ~len
+            seq_tree layout rest ~depth ~cache k ~off ~len
           else
-            seq_v layout trg.v ~cache (seq_tree layout rest ~cache k) ~off ~len
+            seq_v ~depth layout trg.v ~cache
+              (seq_tree ~depth layout rest ~cache k)
+              ~off ~len
 
-    and seq_values layout value_seq : cont -> cont =
+    and seq_values ~depth layout value_seq : cont -> cont =
      fun k ~off ~len ->
       assert (off >= 0);
       assert (len > 0);
@@ -505,20 +512,23 @@ struct
               (* Yield the current value and skip the rest of the inode tree in
                  case the user asked for a specific length. *)
               Seq.Cons (x, Seq.empty)
-            else Seq.Cons (x, fun () -> seq_values layout rest k ~off ~len)
+            else
+              Seq.Cons (x, fun () -> seq_values ~depth layout rest k ~off ~len)
           else
             (* Skip one value in case the user asked for a specific starting
                offset. *)
             let off = off - 1 in
-            seq_values layout rest k ~off ~len
+            seq_values ~depth layout rest k ~off ~len
 
-    and seq_v layout v ~cache : cont -> cont =
+    and seq_v layout v ~depth ~cache : cont -> cont =
      fun k ~off ~len ->
       assert (off >= 0);
       assert (len > 0);
       match v with
-      | Tree t -> seq_tree layout (Array.to_seq t.entries) ~cache k ~off ~len
-      | Values vs -> seq_values layout (StepMap.to_seq vs) k ~off ~len
+      | Tree t ->
+          seq_tree ~depth:(depth + 1) layout (Array.to_seq t.entries) ~cache k
+            ~off ~len
+      | Values vs -> seq_values ~depth layout (StepMap.to_seq vs) k ~off ~len
 
     let empty_continuation : cont = fun ~off:_ ~len:_ -> Seq.Nil
 
@@ -527,17 +537,19 @@ struct
       if off < 0 then invalid_arg "Invalid pagination offset";
       if len < 0 then invalid_arg "Invalid pagination length";
       if len = 0 then Seq.empty
-      else fun () -> seq_v layout t.v ~cache empty_continuation ~off ~len
+      else fun () ->
+        seq_v ~depth:0 layout t.v ~cache empty_continuation ~off ~len
 
     let seq_tree layout ?(cache = true) i : (step * value) Seq.t =
       let off = 0 in
       let len = Int.max_int in
-      fun () -> seq_v layout (Tree i) ~cache empty_continuation ~off ~len
+      fun () ->
+        seq_v ~depth:0 layout (Tree i) ~cache empty_continuation ~off ~len
 
     let seq_v layout ?(cache = true) v : (step * value) Seq.t =
       let off = 0 in
       let len = Int.max_int in
-      fun () -> seq_v layout v ~cache empty_continuation ~off ~len
+      fun () -> seq_v ~depth:0 layout v ~cache empty_continuation ~off ~len
 
     let to_bin_v layout = function
       | Values vs ->
@@ -659,9 +671,9 @@ struct
                             let pointer, tree =
                               try
                                 aux
-                                  (Ptr.target ~cache:true ~force "to_concrete"
-                                     la t)
-                              with Dangling_hash { hash; _ } ->
+                                  (Ptr.target ~depth:tr.depth ~cache:true ~force
+                                     "to_concrete" la t)
+                              with Node.Pruned_hash { hash; _ } ->
                                 (hash, Concrete.Blinded)
                             in
                             (i + 1, { Concrete.index = i; tree; pointer } :: acc))
@@ -763,15 +775,15 @@ struct
       | Unsorted_pointers t -> Error (`Unsorted_pointers t)
       | Blinded_root -> Error `Blinded_root
 
-    let of_inode la length pointers : _ t =
+    let of_inode la ~depth ~length pointers : _ t =
       let hash v = Bin.V.hash (to_bin_v la v) in
       let entries = Array.make Conf.entries None in
       List.iter
         (fun (index, hash) ->
-          let ptr = Ptr.of_target la hash in
+          let ptr = Ptr.of_hash la hash in
           entries.(index) <- Some ptr)
         pointers;
-      let v = Tree { depth = 0; length; entries } in
+      let v = Tree { depth; length; entries } in
       { hash = lazy (hash v); stable = false; v }
 
     let hash t = Lazy.force t.hash
@@ -870,7 +882,9 @@ struct
             let x = t.entries.(i) in
             match x with
             | None -> None
-            | Some i -> aux ~depth:(depth + 1) (target_of_ptr i).v)
+            | Some i ->
+                let depth = depth + 1 in
+                aux ~depth (target_of_ptr ~depth i).v)
       in
       aux ~depth t.v
 
@@ -911,7 +925,7 @@ struct
               let t =
                 (* [cache] is unimportant here as we've already called
                    [find_value] for that path.*)
-                Ptr.target ~cache:true ~force:true "add" layout n
+                Ptr.target ~depth ~cache:true ~force:true "add" layout n
               in
               (add [@tailcall]) layout ~depth:(depth + 1) ~copy ~replace t s v
                 (fun target ->
@@ -952,7 +966,7 @@ struct
                 let t =
                   (* [cache] is unimportant here as we've already called
                      [find_value] for that path.*)
-                  Ptr.target ~cache:true ~force:true "remove" layout t
+                  Ptr.target ~depth ~cache:true ~force:true "remove" layout t
                 in
                 if length t = 1 then (
                   entries.(i) <- None;
@@ -1005,6 +1019,10 @@ struct
       in
       stabilize Total t
 
+    let of_values ~depth l =
+      let t = values Total (StepMap.of_list l) in
+      if depth = 0 then stabilize Total t else t
+
     let save layout ~add ~mem t =
       let clear =
         (* When set to [true], collect the loaded inodes as soon as they're
@@ -1053,7 +1071,7 @@ struct
       let target_of_ptr =
         Ptr.target ~cache:true ~force:true "check_stable" layout
       in
-      let rec check t any_stable_ancestor =
+      let rec check ~depth t any_stable_ancestor =
         let stable = t.stable || any_stable_ancestor in
         match t.v with
         | Values _ -> true
@@ -1062,27 +1080,30 @@ struct
               (function
                 | None -> true
                 | Some t ->
-                    let t = target_of_ptr t in
-                    (if stable then not t.stable else true) && check t stable)
+                    let t = target_of_ptr ~depth t in
+                    (if stable then not t.stable else true)
+                    && check ~depth:(depth + 1) t stable)
               tree.entries
       in
-      check t t.stable
+      check ~depth:0 t t.stable
 
     let contains_empty_map layout t =
       let target_of_ptr =
         Ptr.target ~cache:true ~force:true "contains_empty_map" layout
       in
-      let rec check_lower t =
+      let rec check_lower ~depth t =
         match t.v with
         | Values l when StepMap.is_empty l -> true
         | Values _ -> false
         | Tree inodes ->
             Array.exists
               (function
-                | None -> false | Some t -> target_of_ptr t |> check_lower)
+                | None -> false
+                | Some t ->
+                    target_of_ptr ~depth t |> check_lower ~depth:(depth + 1))
               inodes.entries
       in
-      check_lower t
+      check_lower ~depth:0 t
 
     let is_tree t = match t.v with Tree _ -> true | Values _ -> false
 
@@ -1095,12 +1116,7 @@ struct
     type kinded_hash = [ `Contents of hash * metadata | `Node of hash ]
     [@@deriving irmin]
 
-    type stream_elt =
-      [ `Empty
-      | `Node of (step * kinded_hash) list
-      | `Inode of int * (int * hash) list ]
-    [@@deriving irmin]
-
+    type stream_elt = Node.stream_elt [@@deriving irmin]
     type stream = stream_elt Seq.t [@@deriving irmin]
 
     module Proof = struct
@@ -1189,6 +1205,9 @@ struct
 
     let kind (t : t) =
       if t.stable then Compress.kind_node else Compress.kind_inode
+
+    let depth (t : t) =
+      match t.v with Tree v -> Some v.depth | Values _ -> None
 
     let hash t = Bin.hash t
     let step_to_bin = Irmin.Type.(unstage (to_bin_string T.step_t))
@@ -1322,6 +1341,7 @@ struct
     let pred t = apply t { f = (fun layout v -> I.pred layout v) }
     let of_seq l = Total (I.of_seq l)
     let of_list l = of_seq (List.to_seq l)
+    let of_values ~depth l = Total (I.of_values ~depth l)
 
     let seq ?offset ?length ?cache t =
       apply t { f = (fun layout v -> I.seq layout ?offset ?length ?cache v) }
@@ -1376,8 +1396,10 @@ struct
       apply t { f }
 
     let of_raw find' v =
-      let rec find h =
-        match find' h with None -> None | Some v -> Some (I.of_bin layout v)
+      let rec find ~depth h =
+        match find' ~depth h with
+        | None -> None
+        | Some v -> Some (I.of_bin layout v)
       and layout = I.Partial find in
       Partial (layout, I.of_bin layout v)
 
@@ -1414,20 +1436,23 @@ struct
       match I.of_concrete t with Ok t -> Ok (Truncated t) | Error _ as e -> e
 
     type proof = I.proof [@@deriving irmin]
+    type stream = I.stream [@@deriving irmin]
+    type stream_elt = I.stream_elt [@@deriving irmin]
 
     let to_proof (t : t) : proof =
       apply t { f = (fun la v -> I.Proof.to_proof la v) }
 
     let of_proof (p : proof) = Truncated (I.Proof.of_proof p)
 
-    let of_inode find' len entries : t =
-      let rec find h =
-        match find' h with None -> None | Some v -> Some (I.of_bin la v)
-      and la = I.Partial find in
-      let v = I.of_inode la len entries in
+    let of_inode ~(find : depth:int -> hash -> t option) ~depth ~length entries
+        : t =
+      let rec find_ptr ~depth h =
+        match find ~depth h with Some (Partial (_, v)) -> Some v | _ -> None
+      and la = I.Partial find_ptr in
+      let v = I.of_inode la ~depth ~length entries in
       Partial (la, v)
 
-    let to_stream t : I.stream_elt =
+    let to_stream_elt t : I.stream_elt =
       let to_node la v = `Node (List.of_seq (I.seq la v)) in
       let aux la (v : _ I.t) =
         if v.stable then to_node la v
@@ -1472,19 +1497,42 @@ struct
 
   let mem t k = Pack.mem t k
 
-  let find_with_env ?env t k =
-    let find =
+  let find ?(env : (depth:int -> key -> value option) option) ?hook t k =
+    let find k =
+      Fmt.epr "XXX find\n";
       match env with
-      | None -> Pack.unsafe_find ~check_integrity:true t
-      | Some f -> f
+      | None ->
+          let rec hook_raw k v =
+            let v = Option.map (Val.of_raw find_raw) v in
+            Option.iter (fun f -> f k v) hook
+          and find_raw ~depth k =
+            Fmt.epr "XXX find_raw (no env) depth=%d\n%!" depth;
+            let v = Pack.unsafe_find ~check_integrity:true t k in
+            assert (
+              match Option.join (Option.map Inter.Raw.depth v) with
+              | None -> true
+              | Some d ->
+                  if not (d = depth) then (
+                    Fmt.epr "XXX d=%d depth=%d\n" d depth;
+                    false)
+                  else true);
+            hook_raw k v;
+            v
+          in
+          let v = find_raw ~depth:0 k in
+          Option.map (Val.of_raw find_raw) v
+      | Some f ->
+          let find_raw ~depth k =
+            Fmt.epr "XXX find_raw (env) depth=%d h=%a\n" depth
+              (Irmin.Type.pp H.t) k;
+            let v = f ~depth k in
+            Option.iter (fun f -> f k v) hook;
+            Option.map Val.to_raw v
+          in
+          let v = find_raw ~depth:0 k in
+          Option.map (Val.of_raw find_raw) v
     in
-    match find k with
-    | None -> Lwt.return None
-    | Some v ->
-        let v = Val.of_raw find v in
-        Lwt.return (Some v)
-
-  let find t k = find_with_env t k
+    Lwt.return (find k)
 
   let save t v =
     let add = Pack.unsafe_append ~ensure_unique:true ~overcommit:false t in

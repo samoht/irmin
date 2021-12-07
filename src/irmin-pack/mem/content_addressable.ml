@@ -120,8 +120,9 @@ module Maker (K : Irmin.Hash.S) = struct
     let find ?env ?hook t k =
       Log.debug (fun f -> f "find %a" pp_key k);
       let v =
+        (* FIXME: f and hook are not called recursively *)
         match env with
-        | Some f -> Ok (f k)
+        | Some f -> Ok (f ~depth:0 k)
         | None -> (
             find t k |> function
             | Ok _ as r -> r

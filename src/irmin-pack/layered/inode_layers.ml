@@ -39,17 +39,18 @@ struct
   let mem t k = P.mem t k
   let unsafe_find = P.unsafe_find
 
-  let find ?env ?hook t k =
+  let find ?(env : (depth:int -> key -> value option) option) ?hook t k =
     let find =
-      match env with None -> unsafe_find ~check_integrity:true t | Some f -> f
+      (* FIXME: wrong, won't be calling f recursively on sub-finds *)
+      match env with
+      | Some f -> f ~depth:0
+      | None ->
+          let find ~depth:_ = unsafe_find ~check_integrity:true t in
+          fun k ->
+            let v = find ~depth:0 k in
+            Option.map (Val.of_raw find) v
     in
-    let v =
-      match find k with
-      | None -> None
-      | Some v ->
-          let v = Val.of_raw find v in
-          Some v
-    in
+    let v = find k in
     Option.iter (fun f -> f k v) hook;
     Lwt.return v
 

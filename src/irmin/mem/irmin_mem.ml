@@ -51,7 +51,7 @@ module Read_only (K : Irmin.Type.S) (V : Irmin.Type.S) = struct
     Log.debug (fun f -> f "find %a" pp_key key);
     let v =
       match env with
-      | Some f -> f key
+      | Some f -> f ~depth:0 key
       | None -> ( try Some (KMap.find key t) with Not_found -> None)
     in
     Option.iter (fun f -> f key v) hook;

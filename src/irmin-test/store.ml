@@ -1459,6 +1459,16 @@ module Make (S : S) = struct
         [
           ([ "foo"; "age" ], "0");
           ([ "foo"; "version" ], "1");
+          ([ "foo"; "1" ], "3");
+          ([ "foo"; "2" ], "3");
+          ([ "foo"; "3" ], "3");
+          ([ "foo"; "4" ], "3");
+          ([ "foo"; "5" ], "3");
+          ([ "foo"; "6" ], "3");
+          ([ "foo"; "7" ], "3");
+          ([ "foo"; "8" ], "3");
+          ([ "foo"; "9" ], "3");
+          ([ "foo"; "10" ], "3");
           ([ "bar"; "age" ], "2");
           ([ "bar"; "version" ], "3");
         ]
@@ -1547,7 +1557,9 @@ module Make (S : S) = struct
         let+ _ = S.Tree.verify_stream p f in
         ()
       in
+      Fmt.epr "XXX AAA\n";
       let* () = Lwt_list.iter_s check_proof [ f0; f1 ] in
+      Fmt.epr "XXX BBB\n";
       let* () = Lwt_list.iter_s check_stream [ f0; f1 ] in
 
       (* check env sharing *)

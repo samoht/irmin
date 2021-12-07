@@ -431,10 +431,11 @@ module type Tree = sig
     val produce_proof :
       P.Repo.t -> kinded_hash -> (t -> t Lwt.t) -> proof_tree Lwt.t
 
+    val verify_proof : proof_tree -> (t -> t Lwt.t) -> t Lwt.t
+
     val produce_stream :
       P.Repo.t -> kinded_hash -> (t -> t Lwt.t) -> proof_stream Lwt.t
 
-    val verify_proof : proof_tree -> (t -> t Lwt.t) -> t Lwt.t
     val verify_stream : proof_stream -> (t -> t Lwt.t) -> t Lwt.t
   end
 end

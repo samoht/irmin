@@ -200,8 +200,13 @@ module Maker
                   Lru.add t.lru k v;
                   Some v))
 
-    let find t k =
-      let v = unsafe_find ~check_integrity:true t k in
+    let find ?env ?hook t k =
+      let v =
+        match env with
+        | Some f -> f ~depth:0 k
+        | None -> unsafe_find ~check_integrity:true t k
+      in
+      Option.iter (fun f -> f k v) hook;
       Lwt.return v
 
     let cast t = (t :> read_write t)
