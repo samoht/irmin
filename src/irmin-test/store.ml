@@ -1514,7 +1514,10 @@ module Make (S : S) = struct
         let* t5 = S.Tree.add_tree t [ "dir1"; "dir2" ] t4 in
         let* v = S.Tree.get t5 [ "dir1"; "dir2"; "bar"; "age" ] in
         Alcotest.(check string) "dir1/dir2/bar/age" "3" v;
-        S.Tree.remove t4 [ "bar" ]
+        Fmt.epr "XXXXXXXXXXXXXXXXXXXXXXX0\n";
+        let+ t = S.Tree.remove t4 [ "bar" ] in
+        Fmt.epr "XXXXXXXXXXXXXXXXXXXXXXX1\n";
+        t
       in
       let f1 t0 =
         let hash =
@@ -1560,7 +1563,10 @@ module Make (S : S) = struct
       Fmt.epr "XXX AAA\n";
       let* () = Lwt_list.iter_s check_proof [ f0; f1 ] in
       Fmt.epr "XXX BBB\n";
-      let* () = Lwt_list.iter_s check_stream [ f0; f1 ] in
+      let* () = Lwt_list.iter_s check_stream [ f0 ] in
+      Fmt.epr "XXX CCC\n";
+      let* () = Lwt_list.iter_s check_stream [ f1 ] in
+      Fmt.epr "XXX DDD\n";
 
       (* check env sharing *)
       let tree () =

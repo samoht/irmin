@@ -369,10 +369,7 @@ struct
                 if not force then raise (Pruned_hash { context; hash = h })
                 else
                   match find ~depth h with
-                  | None ->
-                      let e = Printexc.get_callstack 10 in
-                      Printexc.print_raw_backtrace stderr e;
-                      raise (Dangling_hash { context; hash = h })
+                  | None -> raise (Dangling_hash { context; hash = h })
                   | Some x ->
                       if cache then t.target <- Lazy_loaded x;
                       x))
@@ -1019,9 +1016,9 @@ struct
       in
       stabilize Total t
 
-    let of_values ~depth l =
-      let t = values Total (StepMap.of_list l) in
-      if depth = 0 then stabilize Total t else t
+    let of_values la ~depth l =
+      let t = values la (StepMap.of_list l) in
+      if depth = 0 then stabilize la t else t
 
     let save layout ~add ~mem t =
       let clear =
@@ -1341,7 +1338,11 @@ struct
     let pred t = apply t { f = (fun layout v -> I.pred layout v) }
     let of_seq l = Total (I.of_seq l)
     let of_list l = of_seq (List.to_seq l)
-    let of_values ~depth l = Total (I.of_values ~depth l)
+
+    let of_values ~depth l =
+      let find ~depth:_ _ = assert false in
+      let la = I.Partial find in
+      Partial (la, I.of_values la ~depth l)
 
     let seq ?offset ?length ?cache t =
       apply t { f = (fun layout v -> I.seq layout ?offset ?length ?cache v) }
@@ -1446,9 +1447,11 @@ struct
 
     let of_inode ~(find : depth:int -> hash -> t option) ~depth ~length entries
         : t =
-      let rec find_ptr ~depth h =
+      let find_ptr ~depth h =
+        Fmt.epr "XXX of_inode.find_ptr %a\n" pp_hash h;
         match find ~depth h with Some (Partial (_, v)) -> Some v | _ -> None
-      and la = I.Partial find_ptr in
+      in
+      let la = I.Partial find_ptr in
       let v = I.of_inode la ~depth ~length entries in
       Partial (la, v)
 

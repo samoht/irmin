@@ -308,14 +308,18 @@ module Make (P : Private.S) = struct
       | Some _ as v -> v
       | None -> (
           match Queue.take s with
-          | Empty -> None
+          | Empty ->
+              Fmt.epr "XXX Empty\n";
+              None
           | Node n ->
+              Fmt.epr "XXX Node\n";
               let n = P.Node.Val.of_values ~depth n in
               check_node_integrity n h;
               Hashes.add set.nodes h n;
               Fmt.epr "XXX node OK!\n";
               Some n
           | Inode i ->
+              Fmt.epr "XXX INode\n";
               let find ~depth h =
                 Fmt.epr "XXX node_of_stream.find %a\n%!" pp_hash h;
                 node_of_stream ~depth (set, s) h
