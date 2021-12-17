@@ -350,13 +350,7 @@ struct
         Irmin.Type.map ~bin:(encode_bin, decode_bin, size_of) N.t of_n to_n
 
       type proof = N.proof [@@deriving irmin]
-
-      type elt =
-        [ `Empty
-        | `Node of (step * value) list
-        | `Inode of int * (int * hash) list ]
-      [@@deriving irmin]
-
+      type elt = N.elt [@@deriving irmin]
       type stream = elt Seq.t [@@deriving irmin]
 
       let to_proof t = N.to_proof (to_n t)
@@ -366,8 +360,7 @@ struct
 
       let with_handler _ n = n
       let to_elt t = `Node (list t)
-      let of_values ~depth:_ l = Some (of_list l)
-      let of_inode ~depth:_ ~length:_ _ = None
+      let of_elt ~depth:_ = function `Node l -> Some (of_list l) | _ -> None
     end
 
     include Content_addressable (struct

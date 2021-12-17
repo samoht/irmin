@@ -200,13 +200,13 @@ struct
     match Queue.take s with
     | Empty -> None
     | Node n -> (
-        match N.of_values ~depth n with
+        match N.of_elt ~depth (`Node n) with
         | None -> bad_stream_exn "consume_node: Node"
         | Some n as r ->
             check_node_integrity n h;
             r)
     | Inode i -> (
-        match N.of_inode ~depth ~length:i.length i.proofs with
+        match N.of_elt ~depth (`Inode (i.length, i.proofs)) with
         | None -> bad_stream_exn "consume_node: Inode"
         | Some n ->
             let n =

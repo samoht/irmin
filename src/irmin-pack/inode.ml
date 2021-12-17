@@ -848,17 +848,6 @@ struct
       | Unsorted_pointers t -> Error (`Unsorted_pointers t)
       | Blinded_root -> Error `Blinded_root
 
-    let of_inode la ~depth ~length pointers : _ t =
-      let hash v = Bin.V.hash (to_bin_v la v) in
-      let entries = Array.make Conf.entries None in
-      List.iter
-        (fun (index, hash) ->
-          let ptr = Ptr.of_hash la hash in
-          entries.(index) <- Some ptr)
-        pointers;
-      let v = Tree { depth; length; entries } in
-      { hash = lazy (hash v); stable = false; v }
-
     let hash t = Lazy.force t.hash
 
     let is_root t =
@@ -1094,10 +1083,6 @@ struct
       in
       stabilize la t
 
-    let of_values la ~depth l =
-      if depth = 0 then of_seq la (List.to_seq l)
-      else values la (StepMap.of_list l)
-
     let save layout ~add ~mem t =
       let clear =
         (* When set to [true], collect the loaded inodes as soon as they're
@@ -1191,6 +1176,40 @@ struct
 
     type elt = Node.elt [@@deriving irmin]
     type stream = elt Seq.t [@@deriving irmin]
+
+    let of_values la ~depth l =
+      if depth = 0 then of_seq la (List.to_seq l)
+      else values la (StepMap.of_list l)
+
+    let of_inode la ~depth ~length proofs =
+      let hash v = Bin.V.hash (to_bin_v la v) in
+      let new_entries () = Array.make Conf.entries None in
+      let rec aux entries proofs k =
+        match proofs with
+        | [] ->
+            let v = Tree { depth; length; entries } in
+            k { hash = lazy (hash v); stable = false; v }
+        | (index, hash) :: proofs -> (
+            match index with
+            | [] -> assert false
+            | [ index ] ->
+                let ptr = Ptr.of_hash la hash in
+                entries.(index) <- Some ptr;
+                aux entries proofs k
+            | index :: rest ->
+                let entries = new_entries () in
+                aux entries [ (rest, hash) ] (fun t ->
+                    let ptr = Ptr.of_target la t in
+                    entries.(index) <- Some ptr;
+                    aux entries proofs k))
+      in
+      aux (new_entries ()) proofs Fun.id
+
+    let of_elt la ~depth (e : elt) =
+      match e with
+      | `Empty -> None
+      | `Node n -> Some (of_values la ~depth n)
+      | `Inode (length, proofs) -> Some (of_inode la ~length ~depth proofs)
 
     module Proof = struct
       let rec proof_of_concrete :
@@ -1445,11 +1464,6 @@ struct
     let of_seq l = Total (I.of_seq Total l)
     let of_list l = of_seq (List.to_seq l)
 
-    let of_values ~depth l =
-      let find ~expected_depth:_ _ = assert false in
-      let la = I.Partial find in
-      Some (Partial (la, I.of_values la ~depth l))
-
     let seq ?offset ?length ?cache t =
       apply t { f = (fun layout v -> I.seq layout ?offset ?length ?cache v) }
 
@@ -1572,30 +1586,37 @@ struct
           let la = I.Partial find_ptr in
           Partial (la, v)
 
-    let of_inode ~depth ~length entries =
+    let of_elt ~depth e : t option =
       let find ~expected_depth:_ = assert false in
       let la = I.Partial find in
-      let v = I.of_inode la ~depth ~length entries in
-      Some (Partial (la, v))
+      Option.map (fun v -> Partial (la, v)) (I.of_elt la ~depth e)
 
     let to_elt t =
-      let f la (v : _ I.t) =
-        if v.stable then `Node (List.of_seq (I.seq la v))
+      let target = I.Ptr.target ~cache:true ~force:true "to_elt" in
+      let rec aux : type a. _ -> _ I.t -> (elt -> a) -> a =
+       fun la v k ->
+        if v.stable then k (`Node (List.of_seq (I.seq la v)))
         else
           match v.v with
-          | I.Values n -> `Node (List.of_seq (StepMap.to_seq n))
+          | I.Values n -> k (`Node (List.of_seq (StepMap.to_seq n)))
           | I.Tree v ->
-              let entries = ref [] in
-              for i = Array.length v.entries - 1 downto 0 do
-                match v.entries.(i) with
-                | None -> ()
-                | Some ptr ->
-                    let h = I.Ptr.hash la ptr in
-                    entries := (i, h) :: !entries
-              done;
-              `Inode (v.length, !entries)
+              let rec compress entries i =
+                if i < 0 then k (`Inode (v.length, entries))
+                else
+                  match v.entries.(i) with
+                  | None -> compress entries (i - 1)
+                  | Some ptr ->
+                      let e = target ~depth:(v.depth + 1) la ptr in
+                      aux la e (function
+                        | `Inode (_, [ (index, h) ]) ->
+                            compress ((i :: index, h) :: entries) (i - 1)
+                        | _ ->
+                            let h = I.hash e in
+                            compress (([ i ], h) :: entries) (i - 1))
+              in
+              compress [] (Array.length v.entries - 1)
       in
-      apply t { f }
+      apply t { f = (fun la v -> aux la v Fun.id) }
   end
 end
 
