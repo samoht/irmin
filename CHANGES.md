@@ -6,6 +6,11 @@
   - Add configuration option, `lower_root`, to specify a path for archiving data
     during a GC. (#2177, @metanivek)
   - Add `is_split_allowed` to check if a store allows split. (#2175, @metanivek)
+- **irmin-server**
+  - Added `irmin-server` package (#2031, @zshipko)
+- **irmin-client**
+  - Added `irmin-client` package to connect to `irmin-server` instances
+    (#2031, @zshipko)
 
 ### Changed
 
@@ -18,6 +23,7 @@
   - Upgrade on-disk format to version 5. (#2184, @metanivek)
 
 ### Fixed
+
 - **irmin-pack**
   - Unhandled exceptions in GC worker process are now reported as a failure
     (#2163, @metanivek)
