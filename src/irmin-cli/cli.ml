@@ -820,6 +820,15 @@ let graphql =
        Term.(mk graphql $ store () $ port $ addr));
   }
 
+(* SERVER *)
+let server =
+  {
+    name = "server";
+    doc = "Run irmin-server.";
+    man = [];
+    term = Server.main_term;
+  }
+
 let options =
   {
     name = "options";
@@ -1015,6 +1024,7 @@ let default =
       \    dot         %s\n\
       \    graphql     %s\n\
       \    http        %s\n\
+      \    server      %s\n\
       \    options     %s\n\
       \    branches    %s\n\
       \    log         %s\n\n\
@@ -1022,7 +1032,7 @@ let default =
        %!"
       init.doc get.doc set.doc remove.doc list.doc tree.doc clone.doc fetch.doc
       merge.doc pull.doc push.doc snapshot.doc revert.doc watch.doc dot.doc
-      graphql.doc http.doc options.doc branches.doc log.doc
+      graphql.doc http.doc server.doc options.doc branches.doc log.doc
   in
   ( Term.(mk usage $ const ()),
     deprecated_info "irmin" ~version:Irmin.version ~sdocs:global_option_section
@@ -1049,6 +1059,7 @@ let commands =
       watch;
       dot;
       graphql;
+      server;
       options;
       branches;
       log;
