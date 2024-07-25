@@ -43,5 +43,9 @@ module type Server = sig
   module type S = S
 
   module Make (Codec : Conn.Codec.S) (Store : Irmin.Generic_key.S) :
-    S with module Store = Store and module Command.Conn.IO = IO
+    S
+      with module Store = Store
+       and type Command.Conn.IO.flow = IO.flow
+       and type Command.Conn.IO.ic = IO.ic
+       and type Command.Conn.IO.oc = IO.oc
 end

@@ -28,7 +28,11 @@ module type IO = sig
 
   exception Timeout
 
+  val pp_in : ic Fmt.t
+  val pp_out : oc Fmt.t
   val is_closed : ic -> bool
+  val close_in : ic -> unit Lwt.t
+  val close_out : oc -> unit Lwt.t
   val write_int64_be : oc -> int64 -> unit Lwt.t
   val read_int64_be : ic -> int64 Lwt.t
   val flush : oc -> unit Lwt.t
@@ -43,7 +47,7 @@ end
 module type S = sig
   module IO : IO
 
-  type t = { ic : IO.ic; oc : IO.oc; buffer : bytes }
+  type t
 
   val v : ?buffer_size:int -> IO.ic -> IO.oc -> t
   (** Create a new connection using [flow], [ic] and [oc] *)
@@ -62,6 +66,12 @@ module type S = sig
 
   val err : t -> string -> unit Lwt.t
   (** Send error message *)
+
+  val close : t -> unit Lwt.t
+  (** Close the connection. *)
+
+  val pp : t Fmt.t
+  (** Pretty print the connection. *)
 
   module Handshake : sig
     module V1 : sig

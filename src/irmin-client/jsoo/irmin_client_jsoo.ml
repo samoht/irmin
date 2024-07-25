@@ -149,7 +149,7 @@ end
 
 module IO = struct
   type flow = unit
-  type channel = { closed : Lwt_switch.t; buff : Buff.t }
+  type channel = { id : int; closed : Lwt_switch.t; buff : Buff.t }
   type ctx = unit
 
   let default_ctx = Lazy.from_val ()
@@ -159,10 +159,20 @@ module IO = struct
 
   exception Timeout
 
+  let new_id =
+    let c = ref (-1) in
+    fun () ->
+      incr c;
+      !c
+
+  let pp_in ppf { id; _ } = Fmt.int ppf id
+  let pp_out ppf { id; _ } = Fmt.int ppf id
   let is_closed { closed; _ } = not (Lwt_switch.is_on closed)
   let write_int64_be { buff; _ } i = Lwt.return @@ Buff.add_int64_be buff i
   let read_int64_be { buff; _ } = Buff.read_int64_be buff
   let write { buff; _ } i = Lwt.return @@ Buff.add_string buff i
+  let close_in { closed; _ } = Lwt_switch.turn_off closed
+  let close_out { closed; _ } = Lwt_switch.turn_off closed
 
   let read_into_exactly { buff; _ } bs off len =
     Buff.read_into_exactly ~off ~len ~buf:buff bs
@@ -251,8 +261,9 @@ module IO = struct
     let c2_switch = Lwt_switch.create () in
     Lwt_switch.add_hook (Some c2_switch) (fun () ->
         Lwt.return @@ Websocket.close ws);
-    let c1 = { closed = c1_switch; buff = Buff.create 4096 } in
-    let c2 = { closed = c1_switch; buff = Buff.create 4096 } in
+    let id = new_id () in
+    let c1 = { id; closed = c1_switch; buff = Buff.create 4096 } in
+    let c2 = { id; closed = c1_switch; buff = Buff.create 4096 } in
     let _ev =
       Brr.Ev.listen Message.Ev.message (fill_ic c1) (Websocket.as_target ws)
     in
@@ -287,10 +298,6 @@ module IO = struct
         p >|= fun () -> websocket_to_flow ws
     | `Ws _ | `TLS _ | `TCP _ | `Unix_domain_socket _ ->
         failwith "Unsupported Websocket Protocol"
-
-  let close (ic, oc) =
-    let open Lwt.Infix in
-    Lwt_switch.turn_off ic.closed >>= fun () -> Lwt_switch.turn_off oc.closed
 end
 
 let normalize_uri ?hostname uri =

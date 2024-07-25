@@ -29,7 +29,6 @@ module type IO = sig
 
   val default_ctx : ctx lazy_t
   val connect : ctx:ctx -> addr -> (ic * oc) Lwt.t
-  val close : ic * oc -> unit Lwt.t
 end
 
 module type S = sig
@@ -43,10 +42,6 @@ module type S = sig
 
   val close : repo -> unit Lwt.t
   (** Close connection to the server *)
-
-  val dup : repo -> repo Lwt.t
-  (** Duplicate a client. This will create a new connection with the same
-      configuration *)
 
   val ping : repo -> unit Error.result Lwt.t
   (** Ping the server *)

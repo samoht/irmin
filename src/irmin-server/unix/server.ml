@@ -98,7 +98,7 @@ module Make (Codec : Conn.Codec.S) (Store : Irmin.Generic_key.S) = struct
     else
       Lwt.catch
         (fun () ->
-          [%log.debug "Receiving next command"];
+          [%log.debug "[%a] Waiting for next command..." Conn.pp conn];
           (* Get request header (command and number of arguments) *)
           let* Conn.Request.{ command } = Conn.Request.read_header conn in
           (* Get command *)
@@ -108,33 +108,38 @@ module Make (Codec : Conn.Codec.S) (Store : Irmin.Generic_key.S) = struct
               else Conn.err conn ("unknown command: " ^ command)
           | Some (module Cmd : Command.CMD) ->
               let* req = Conn.read conn Cmd.req_t >|= invalid_arguments in
-              [%log.debug "Command: %s" Cmd.name];
+              [%log.debug "[%a] executing command '%s'" Conn.pp conn Cmd.name];
               let* res =
                 Lwt_mutex.with_lock command_lock @@ fun () ->
                 Cmd.run conn client info req
               in
+              [%log.debug "[%a] command '%s': done" Conn.pp conn Cmd.name];
               Conn.Return.finish res)
         (function
           | Error.Error s ->
               (* Recover *)
-              [%log.err "Error response: %s" s];
+              [%log.err "[%a] Error response: %s" Conn.pp conn s];
               let* () = Conn.err conn s in
               Lwt_unix.sleep 0.01
           | End_of_file ->
               (* Client has disconnected *)
-              let* () = Lwt_io.close conn.ic in
+              let* () = Conn.close conn in
               Lwt.return_unit
           | exn ->
               if Conn.is_closed conn then Lwt.return_unit
               else
                 (* Unhandled exception *)
                 let s = Printexc.to_string exn in
-                [%log.err "Exception: %s\n%s" s (Printexc.get_backtrace ())];
+                [%log.err
+                  "[%a] Exception: %s\n%s" Conn.pp conn s
+                    (Printexc.get_backtrace ())];
                 let* () = Conn.err conn s in
                 Lwt_unix.sleep 0.01)
       >>= fun () -> loop repo conn client info
 
   let callback { repo; info; config; _ } ic oc =
+    let id = IO.new_id () in
+    let ic = { IO.id; t = ic } and oc = { IO.id; t = oc } in
     (* Handshake check *)
     let conn = Conn.v ic oc in
     let* check =
@@ -144,8 +149,8 @@ module Make (Codec : Conn.Codec.S) (Store : Irmin.Generic_key.S) = struct
     in
     if not check then (
       (* Hanshake failed *)
-      [%log.info "Client closed because of invalid handshake"];
-      Lwt_io.close ic)
+      [%log.info "Client closed because of invalid handshake (2)"];
+      IO.close_in ic)
     else
       (* Handshake ok *)
       let client =
@@ -351,7 +356,7 @@ module Make (Codec : Conn.Codec.S) (Store : Irmin.Generic_key.S) = struct
             (websocket_handler t)
       | _ ->
           Conduit_lwt_unix.serve ?stop ~ctx:t.ctx ~on_exn ~mode:t.server
-            (fun _ ic oc -> callback t ic oc)
+            (* XXX: ~backlog:2 *) (fun _ ic oc -> callback t ic oc)
     in
     let* () = Lwt.join [ server; dashboard ] in
     Lwt.wrap (fun () -> unlink ())

@@ -67,12 +67,20 @@ module Make (Log : Logs.LOG) (Zzz : Sleep) (S : Generic_key) = struct
         | Some h -> if eq (`Updated (h, h2)) x then incr r
       in
       let* u =
-        S.watch ?init:h t (fun v -> check v >|= fun () -> failwith "test")
+        S.watch ?init:h t (fun v ->
+            Fmt.epr "XXX u\n%!";
+            check v >|= fun () -> failwith "test")
       in
       let* v =
-        S.watch ?init:h t (fun v -> check v >>= fun () -> Lwt.fail_with "test")
+        S.watch ?init:h t (fun v ->
+            Fmt.epr "XXX v\n%!";
+            check v >>= fun () -> Lwt.fail_with "test")
       in
-      let* w = S.watch ?init:h t (fun v -> check v) in
+      let* w =
+        S.watch ?init:h t (fun v ->
+            Fmt.epr "XXX w\n%!";
+            check v)
+      in
       S.set_exn t ~info:(infof "update") key v1 >>= fun () ->
       let* () =
         retry
@@ -94,16 +102,19 @@ module Make (Log : Logs.LOG) (Zzz : Sleep) (S : Generic_key) = struct
       old_head := Some h;
       let* u =
         S.watch_key ~init:h t key (fun _ ->
+            Fmt.epr "XXX YYY u\n%!";
             incr r;
             failwith "test")
       in
       let* v =
         S.watch_key ~init:h t key (fun _ ->
+            Fmt.epr "XXX YYY v\n%!";
             incr r;
             Lwt.fail_with "test")
       in
       let* w =
         S.watch_key ~init:h t key (fun _ ->
+            Fmt.epr "XXX YYY z\n%!";
             incr r;
             Lwt.return_unit)
       in

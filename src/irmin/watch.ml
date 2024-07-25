@@ -102,6 +102,10 @@ struct
   let equal_opt_values = Type.(unstage (equal (option V.t)))
   let equal_keys = Type.(unstage (equal K.t))
 
+  type listener = { mutable active : int; mutable stop : unit -> unit Lwt.t }
+
+  let listener () = { active = 0; stop = Lwt.return }
+
   type t = {
     id : int;
     (* unique watch manager id. *)
@@ -117,18 +121,15 @@ struct
     (* enqueue notifications. *)
     clean : unit -> unit;
     (* destroy the notification thread. *)
-    mutable listeners : int;
-    (* number of listeners. *)
-    mutable stop_listening : unit -> unit Lwt.t;
-    (* clean-up listen resources. *)
-    mutable notifications : int; (* number of notifcations. *)
+    dir : listener;
+    mutable notifications : int; (* number of notifcations sent. *)
   }
 
   let stats t = (IMap.cardinal t.keys, IMap.cardinal t.glob)
 
   let to_string t =
     let k, a = stats t in
-    Printf.sprintf "[%d: %dk/%dg|%d]" t.id k a t.listeners
+    Printf.sprintf "[%d: %dk/%dg|%d]" t.id k a t.dir.active
 
   let next t =
     let id = t.next in
@@ -150,6 +151,7 @@ struct
   let v () =
     let lock = Lwt_mutex.create () in
     let clean, enqueue = scheduler () in
+    let dir = listener () in
     {
       lock;
       clean;
@@ -158,8 +160,7 @@ struct
       next = 0;
       keys = IMap.empty;
       glob = IMap.empty;
-      listeners = 0;
-      stop_listening = (fun () -> Lwt.return_unit);
+      dir;
       notifications = 0;
     }
 
@@ -183,12 +184,7 @@ struct
     | None, Some v -> `Added v
     | Some x, Some y -> `Updated (x, y)
 
-  let protect f () =
-    Lwt.catch f (fun e ->
-        [%log.err
-          "watch callback got: %a\n%s" Fmt.exn e (Printexc.get_backtrace ())];
-        Lwt.return_unit)
-
+  let protect f () = Lwt.catch f (fun _ -> Lwt.return_unit)
   let pp_option = Fmt.option ~none:(Fmt.any "<none>")
   let pp_key = Type.pp K.t
 
@@ -292,7 +288,7 @@ struct
 
   let listen_dir t dir ~key ~value =
     let init () =
-      if t.listeners = 0 then (
+      if t.dir.active = 0 then (
         [%log.debug "%s: start listening to %s" (to_string t) dir];
         let+ f =
           !listen_dir_hook t.id dir (fun file ->
@@ -309,18 +305,18 @@ struct
                   in
                   read t.notifications)
         in
-        t.stop_listening <- f)
+        t.dir.stop <- f)
       else (
         [%log.debug "%s: already listening on %s" (to_string t) dir];
         Lwt.return_unit)
     in
     init () >|= fun () ->
-    t.listeners <- t.listeners + 1;
+    t.dir.active <- t.dir.active + 1;
     function
     | () ->
-        if t.listeners > 0 then t.listeners <- t.listeners - 1;
-        if t.listeners <> 0 then Lwt.return_unit
+        if t.dir.active > 0 then t.dir.active <- t.dir.active - 1;
+        if t.dir.active <> 0 then Lwt.return_unit
         else (
           [%log.debug "%s: stop listening to %s" (to_string t) dir];
-          t.stop_listening ())
+          t.dir.stop ())
 end

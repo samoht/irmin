@@ -14,30 +14,12 @@
  * OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
  *)
 
-type flow = Conduit_lwt_unix.flow
 type 'a t = { id : int; t : 'a Lwt_io.channel }
-type ic = Lwt_io.input t
-type oc = Lwt_io.output t
 
-exception Timeout = Lwt_unix.Timeout
+include
+  Irmin_server.Conn.IO
+    with type flow = Conduit_lwt_unix.flow
+     and type ic = Lwt_io.input t
+     and type oc = Lwt_io.output t
 
-let pp_in ppf { id; _ } = Fmt.pf ppf "S%d" id
-let pp_out ppf { id; _ } = Fmt.pf ppf "S%d" id
-let is_closed { t; _ } = Lwt_io.is_closed t
-let write_int64_be { t; _ } = Lwt_io.BE.write_int64 t
-let read_int64_be { t; _ } = Lwt_io.BE.read_int64 t
-let flush { t; _ } = Lwt_io.flush t
-let write { t; _ } = Lwt_io.write t
-let close_in { t; _ } = Lwt_io.close t
-let close_out { t; _ } = Lwt_io.close t
-let read_into_exactly { t; _ } = Lwt_io.read_into_exactly t
-let write_char { t; _ } = Lwt_io.write_char t
-let read_char { t; _ } = Lwt_io.read_char t
-let with_timeout = Lwt_unix.with_timeout
-let time = Unix.time
-
-let new_id =
-  let c = ref (-1) in
-  fun () ->
-    incr c;
-    !c
+val new_id : unit -> int

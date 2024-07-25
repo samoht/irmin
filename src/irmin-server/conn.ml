@@ -42,11 +42,20 @@ module Make (I : IO) (T : Codec.S) = struct
     { ic; oc; buffer = Bytes.create buffer_size }
   [@@inline]
 
+  let pp ppf t =
+    let ic = Fmt.to_to_string IO.pp_in t.ic in
+    let oc = Fmt.to_to_string IO.pp_out t.oc in
+    if ic = oc then Fmt.string ppf ic else Fmt.pf ppf "%s|%s" ic oc
+
   let is_closed { ic; _ } = IO.is_closed ic
+
+  let close { ic; _ } =
+    [%log.debug "[%a] close" IO.pp_in ic];
+    IO.close_in ic
 
   let write_raw t s : unit Lwt.t =
     let len = String.length s in
-    [%log.debug "Writing raw message: length=%d" len];
+    [%log.debug "[%a] write raw message: length=%d" IO.pp_out t.oc len];
     let* x =
       IO.write_int64_be t.oc (Int64.of_int len) >>= fun () ->
       if len <= 0 then Lwt.return_unit else IO.write t.oc s
@@ -62,7 +71,7 @@ module Make (I : IO) (T : Codec.S) = struct
     let* n =
       Lwt.catch (fun () -> IO.read_int64_be t.ic) (fun _ -> Lwt.return 0L)
     in
-    [%log.debug "Raw message length=%Ld" n];
+    [%log.debug "[%a] read raw message length=%Ld" IO.pp_in t.ic n];
     if n <= 0L then Lwt.return Bytes.empty
     else
       let n = Int64.to_int n in
@@ -98,16 +107,19 @@ module Make (I : IO) (T : Codec.S) = struct
                 s = String.trim (Bytes.unsafe_to_string line)))
           (function
             | IO.Timeout -> Error.raise_error "unable to connect to server"
-            | End_of_file -> Error.raise_error "invalid handshake"
+            | End_of_file -> Error.raise_error "invalid handshake (1)"
             | x -> raise x)
 
       let check store t =
         let s = fingerprint store in
         let* line = IO.with_timeout 3.0 (fun () -> read_raw t) in
-        if String.trim (Bytes.unsafe_to_string line) = s then
+        if String.trim (Bytes.unsafe_to_string line) = s then (
+          [%log.debug "[%a] check handshake (V1): ok" pp t];
           let* () = write_raw t s in
-          Lwt.return_true
-        else Lwt.return_false
+          Lwt.return_true)
+        else (
+          [%log.err "[%a] check handshake (V1): failed" pp t];
+          Lwt.return_false)
     end
   end
 
@@ -117,15 +129,14 @@ module Make (I : IO) (T : Codec.S) = struct
     let v_header ~status = { status } [@@inline]
 
     let write_header t { status; _ } =
-      [%log.debug "Writing response header: status=%d" status];
+      [%log.debug "[%a] write response header: status=%d" IO.pp_out t.oc status];
       let+ x = IO.write_char t.oc (char_of_int status) in
       x
 
     let read_header t =
-      [%log.debug "Starting response header read"];
       let+ status = IO.read_char t.ic in
       let status = int_of_char status in
-      [%log.debug "Read response header: status=%d" status];
+      [%log.debug "[%a] read response header: status=%d" IO.pp_in t.ic status];
       { status }
     [@@inline]
 
@@ -146,7 +157,8 @@ module Make (I : IO) (T : Codec.S) = struct
     let v_header ~command = { command } [@@inline]
 
     let write_header t { command } : unit Lwt.t =
-      [%log.debug "Writing request header: command=%s" command];
+      [%log.debug
+        "[%a] write request header: command=%s" IO.pp_out t.oc command];
       let* () = IO.write_char t.oc (char_of_int (String.length command)) in
       IO.write t.oc (String.lowercase_ascii command)
 
@@ -157,7 +169,7 @@ module Make (I : IO) (T : Codec.S) = struct
         IO.read_into_exactly t.ic (Bytes.unsafe_of_string command) 0 length
       in
       let command = String.lowercase_ascii command in
-      [%log.debug "Request header read: command=%s" command];
+      [%log.debug "[%a] read request header: command=%s" IO.pp_in t.ic command];
       { command }
   end
 

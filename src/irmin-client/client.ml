@@ -20,8 +20,6 @@ open Lwt.Syntax
 open Lwt.Infix
 include Client_intf
 
-exception Continue
-
 module Conf = struct
   include Irmin.Backend.Conf
 
@@ -63,9 +61,11 @@ struct
     lock : Lwt_mutex.t;
   }
 
+  let pp ppf t = Conn.pp ppf t.conn
+
   let close t =
     t.closed <- true;
-    IO.close (t.conn.ic, t.conn.oc)
+    Conn.close t.conn
 
   let mk_client conf =
     let uri = Conf.get conf Conf.uri in
@@ -102,11 +102,11 @@ struct
     let* res = Conn.Response.read_header t.conn in
     Conn.Response.get_error t.conn res >>= function
     | Some err ->
-        [%log.err "Request error: command=%s, error=%s" name err];
+        [%log.err "[%a] Request error: command=%s, error=%s" pp t name err];
         Lwt.return_error (`Msg err)
     | None ->
         let+ x = Conn.read t.conn ty in
-        [%log.debug "Completed request: command=%s" name];
+        [%log.debug "[%a] Completed request: command=%s" pp t name];
         x
 
   let request (t : t) (type x y)
@@ -114,11 +114,10 @@ struct
     if t.closed then raise Irmin.Closed
     else
       let name = Cmd.name in
-      [%log.debug "Starting request: command=%s" name];
+      [%log.debug "[%a] Starting request: command=%s" Conn.pp t.conn name];
       lock t (fun () ->
           let* () = send_command_header t (module Cmd) in
           let* () = Conn.write t.conn Cmd.req_t a in
-          let* () = IO.flush t.conn.oc in
           recv t name Cmd.res_t)
 
   let recv_branch_diff (t : t) =
@@ -140,33 +139,77 @@ struct
   module Conn = Command.Conn
   module Commands = Command.Commands
 
+  module R = struct
+    module Key = Store.Backend.Branch.Key
+    module Val = Store.Backend.Branch.Val
+    module W = Irmin.Backend.Watch.Make (Key) (Val)
+
+    module Keys = Hashtbl.Make (struct
+      type t = Key.t
+
+      let hash = Hashtbl.hash
+      let equal = Irmin.Type.(unstage (equal Key.t))
+    end)
+
+    (* cache the stream connections to the server: we open only one
+       connection per stream kind. *)
+    type cache = { mutable listeners : int; mutable stop : unit -> unit Lwt.t }
+
+    let empty_cache () = { listeners = 0; stop = Lwt.return }
+
+    type t = { client : Client.t; w : W.t; keys : cache Keys.t; global : cache }
+
+    let pp ppf t =
+      let x, y = W.stats t.w in
+      Fmt.pf ppf "%a|%d,%d" Conn.pp t.client.conn x y
+
+    let v client =
+      { client; w = W.v (); keys = Keys.create 3; global = empty_cache () }
+
+    let close t =
+      [%log.debug "[%a] close" pp t];
+      let* () = t.global.stop () in
+      let acc =
+        Keys.fold
+          (fun _ c acc ->
+            let* () = acc in
+            c.stop ())
+          t.keys Lwt.return_unit
+      in
+      let* () = acc in
+      Client.close t.client
+  end
+
   let request = Client.request
 
-  let rec connect ?ctx config =
+  let connect ?ctx config =
     let ctx = Option.value ~default:(Lazy.force IO.default_ctx) ctx in
     let client = Client.mk_client config in
     let* ic, oc = IO.connect ~ctx client in
     let conn = Conn.v ic oc in
+    [%log.debug "[%a] send handshake (V1)" Conn.pp conn];
     let+ ok = Conn.Handshake.V1.send (module Store) conn in
-    if not ok then Error.raise_error "invalid handshake"
+    if not ok then Error.raise_error "invalid handshake (3)"
     else
       let t =
         Client.{ config; ctx; conn; closed = false; lock = Lwt_mutex.create () }
       in
       t
 
-  and reconnect t =
-    let* () = Lwt.catch (fun () -> Client.close t) (fun _ -> Lwt.return_unit) in
-    let+ conn = connect ~ctx:t.ctx t.Client.config in
-    t.conn <- conn.conn;
-    t.closed <- false
+  let reconnect (t : R.t) =
+    [%log.debug "[%a] reconnect" R.pp t];
+    let* () = Lwt.catch (fun () -> R.close t) (fun _ -> Lwt.return_unit) in
+    let+ conn = connect ~ctx:t.client.ctx t.client.config in
+    t.client.conn <- conn.conn;
+    t.client.closed <- false
 
-  let dup client =
-    let* c = connect ~ctx:client.Client.ctx client.Client.config in
-    let () = if client.closed then c.closed <- true in
-    Lwt.return c
+  let dup (t : R.t) =
+    [%log.debug "[%a] dup " R.pp t];
+    let+ client = connect ~ctx:t.client.ctx t.client.config in
+    let () = if t.client.closed then client.closed <- true in
+    client
 
-  let uri t = Conf.get t.Client.config Conf.uri
+  let uri (t : R.t) = Conf.get t.client.config Conf.uri
 
   module X = struct
     open Lwt.Infix
@@ -185,25 +228,40 @@ struct
       type value = Val.t
       type hash = Hash.t
 
-      let mem t key = request t (module Mem) key >|= Error.unwrap "Contents.mem"
+      let pp ppf t = Conn.pp ppf t.Client.conn
+      let pp_key = Irmin.Type.pp Key.t
+
+      let mem t key =
+        [%log.debug "[%a] Contents.mem %a" pp t pp_key key];
+        request t (module Mem) key >|= Error.unwrap "Contents.mem"
 
       let find t key =
+        [%log.debug "[%a] Contents.find %a" pp t pp_key key];
         request t (module Find) key >|= Error.unwrap "Contents.find"
 
       let add t value =
+        [%log.debug "[%a] Contents.add" pp t];
         request t (module Add) value >|= Error.unwrap "Contents.add"
 
       let unsafe_add t key value =
+        [%log.debug "[%a] Contents.unsafe_add" pp t];
         request t (module Unsafe_add) (key, value)
         >|= Error.unwrap "Contents.unsafe_add"
 
       let index t hash =
+        [%log.debug "[%a] Contents.index" pp t];
         request t (module Index) hash >|= Error.unwrap "Contents.index"
 
-      let batch t f = f t
-      let close t = Client.close t
+      let batch t f =
+        [%log.debug "[%a] Contents.batch" pp t];
+        f t
+
+      let close t =
+        [%log.debug "[%a] Contents.close" pp t];
+        Client.close t
 
       let merge t =
+        [%log.debug "[%a] Contents.merge" pp t];
         let f ~old a b =
           let* old = old () in
           match old with
@@ -230,21 +288,40 @@ struct
       type value = Val.t
       type hash = Hash.t
 
-      let mem t key = request t (module Mem) key >|= Error.unwrap "Node.mem"
-      let find t key = request t (module Find) key >|= Error.unwrap "Node.find"
-      let add t value = request t (module Add) value >|= Error.unwrap "Node.add"
+      let pp ppf t = Conn.pp ppf t.Client.conn
+      let pp_key = Irmin.Type.pp Key.t
+
+      let mem t key =
+        [%log.debug "[%a] Node.close %a" pp t pp_key key];
+        request t (module Mem) key >|= Error.unwrap "Node.mem"
+
+      let find t key =
+        [%log.debug "[%a] Node.find %a" pp t pp_key key];
+        request t (module Find) key >|= Error.unwrap "Node.find"
+
+      let add t value =
+        [%log.debug "[%a] Node.add" pp t];
+        request t (module Add) value >|= Error.unwrap "Node.add"
 
       let unsafe_add t key value =
+        [%log.debug "[%a] Node.unsafe_add" pp t];
         request t (module Unsafe_add) (key, value)
         >|= Error.unwrap "Node.unsafe_add"
 
       let index t hash =
+        [%log.debug "[%a] Node.index" pp t];
         request t (module Index) hash >|= Error.unwrap "Node.index"
 
-      let batch t f = f t
-      let close t = Client.close t
+      let batch t f =
+        [%log.debug "[%a] Node.batch" pp t];
+        f t
+
+      let close t =
+        [%log.debug "[%a] Node.close" pp t];
+        Client.close t
 
       let merge t =
+        [%log.debug "[%a] Node.merge" pp t];
         let f ~old a b =
           let* old = old () in
           match old with
@@ -271,25 +348,40 @@ struct
       type value = Val.t
       type hash = Hash.t
 
-      let mem t key = request t (module Mem) key >|= Error.unwrap "Commit.mem"
+      let pp ppf t = Conn.pp ppf t.Client.conn
+      let pp_key = Irmin.Type.pp Key.t
+
+      let mem t key =
+        [%log.debug "[%a] Commit.mem %a" pp t pp_key key];
+        request t (module Mem) key >|= Error.unwrap "Commit.mem"
 
       let find t key =
+        [%log.debug "[%a] Commit.find %a" pp t pp_key key];
         request t (module Find) key >|= Error.unwrap "Commit.find"
 
       let add t value =
+        [%log.debug "[%a] Commit.add" pp t];
         request t (module Add) value >|= Error.unwrap "Commit.add"
 
       let unsafe_add t key value =
+        [%log.debug "[%a] Commit.unsafe_add" pp t];
         request t (module Unsafe_add) (key, value)
         >|= Error.unwrap "Commit.unsafe_add"
 
       let index t hash =
+        [%log.debug "[%a] Commit.index" pp t];
         request t (module Index) hash >|= Error.unwrap "Commit.index"
 
-      let batch t f = f t
-      let close t = Client.close t
+      let batch t f =
+        [%log.debug "[%a] Commit.batch" pp t];
+        f t
+
+      let close t =
+        [%log.debug "[%a] Commit.close" pp t];
+        Client.close t
 
       let merge t ~info =
+        [%log.debug "[%a] Commit.merge" pp t];
         let f ~old a b =
           let* old = old () in
           match old with
@@ -304,95 +396,163 @@ struct
     module Commit_portable = Store.Backend.Commit_portable
 
     module Branch = struct
-      type nonrec t = Client.t
-
       open Commands.Branch
-      module Key = Store.Backend.Branch.Key
-      module Val = Store.Backend.Branch.Val
+      include R
 
       type key = Key.t
       type value = Val.t
+      type watch = Global of W.watch | Key of key * W.watch
 
-      let mem t key = request t (module Mem) key >|= Error.unwrap "Branch.mem"
+      let pp_key = Irmin.Type.pp Key.t
+
+      let mem t key =
+        [%log.debug "[%a] Branch.merge %a" pp t pp_key key];
+        request t.client (module Mem) key >|= Error.unwrap "Branch.mem"
 
       let find t key =
-        request t (module Find) key >|= Error.unwrap "Branch.find"
+        [%log.debug "[%a] Branch.find %a" pp t pp_key key];
+        request t.client (module Find) key >|= Error.unwrap "Branch.find"
 
       let set t key value =
-        request t (module Set) (key, value) >|= Error.unwrap "Branch.set"
+        [%log.debug "[%a] Branch.set %a" pp t pp_key key];
+        request t.client (module Set) (key, value) >|= Error.unwrap "Branch.set"
 
       let test_and_set t key ~test ~set =
-        request t (module Test_and_set) (key, test, set)
+        [%log.debug "[%a] Branch.test_and_set %a" pp t pp_key key];
+        request t.client (module Test_and_set) (key, test, set)
         >|= Error.unwrap "Branch.test_and_set"
 
       let remove t key =
-        request t (module Remove) key >|= Error.unwrap "Branch.remove"
+        [%log.debug "[%a] Branch.remove %a" pp t pp_key key];
+        request t.client (module Remove) key >|= Error.unwrap "Branch.remove"
 
-      let list t = request t (module List) () >|= Error.unwrap "Branch.list"
+      let list t =
+        [%log.debug "[%a] Branch.list" pp t];
+        request t.client (module List) () >|= Error.unwrap "Branch.list"
 
-      type watch = t
+      let seq f g =
+        let* () = Lwt.catch f (fun _ -> Lwt.return_unit) in
+        g ()
 
       let watch t ?init f =
-        let* t = dup t in
+        [%log.debug "[%a] Branch.watch" pp t];
+        let init_stream () =
+          [%log.debug "[%a] Branch.watch: init stream" pp t];
+          assert (t.global.listeners = 0);
+          let* client = dup t in
+          let* () =
+            request client (module Watch) init >|= Error.unwrap "Branch.watch"
+          in
+          let rec loop () =
+            if client.closed || Conn.is_closed client.conn then Lwt.return_unit
+            else
+              seq
+                (fun () ->
+                  Client.recv_branch_diff client >>= fun (key, diff) ->
+                  match diff with
+                  | `Updated (_, v) | `Added v -> W.notify t.w key (Some v)
+                  | `Removed _ -> W.notify t.w key None)
+                loop
+          in
+          Lwt.async loop;
+          t.global.listeners <- 1;
+          t.global.stop <-
+            (fun () ->
+              let* () = Conn.write client.conn Unwatch.req_t () in
+              Client.close client);
+          Lwt.return_unit
+        in
         let* () =
-          request t (module Watch) init >|= Error.unwrap "Branch.watch"
+          match t.global.listeners with
+          | 0 -> init_stream ()
+          | n ->
+              assert (n > 0);
+              t.global.listeners <- 1 + t.global.listeners;
+              Lwt.return_unit
         in
-        let rec loop () =
-          if t.closed || Conn.is_closed t.conn then Lwt.return_unit
-          else
-            Lwt.catch
-              (fun () ->
-                Lwt.catch
-                  (fun () -> Client.recv_branch_diff t)
-                  (fun _ -> raise Continue)
-                >>= fun (key, diff) -> f key diff >>= loop)
-              (function _ -> loop ())
-        in
-        Lwt.async loop;
-        Lwt.return t
+        let+ w = W.watch t.w ?init f in
+        Global w
 
       let watch_key t key ?init f =
-        let* t = dup t in
+        [%log.debug "[%a] Branch.watch_key %a" pp t pp_key key];
+        let init_stream cache =
+          [%log.debug "[%a] Branch.watch_key %a: init stream" pp t pp_key key];
+          assert (cache.listeners = 0);
+          let* client = dup t in
+          let* () =
+            request client (module Watch_key) (init, key)
+            >|= Error.unwrap "Branch.watch_key"
+          in
+          let rec loop () =
+            if client.closed || Conn.is_closed client.conn then Lwt.return_unit
+            else seq (fun () -> Client.recv_branch_key_diff client >>= f) loop
+          in
+          Lwt.async loop;
+          cache.listeners <- 1;
+          cache.stop <-
+            (fun () ->
+              let* () = Conn.write client.conn Unwatch.req_t () in
+              Client.close client);
+          Lwt.return_unit
+        in
         let* () =
-          request t (module Watch_key) (init, key)
-          >|= Error.unwrap "Branch.watch_key"
+          match Keys.find_opt t.keys key with
+          | None ->
+              let cache = empty_cache () in
+              Keys.add t.keys key cache;
+              init_stream cache
+          | Some cache ->
+              assert (cache.listeners > 0);
+              cache.listeners <- cache.listeners + 1;
+              Lwt.return_unit
         in
-        let rec loop () =
-          if t.closed || Conn.is_closed t.conn then Lwt.return_unit
-          else
-            Lwt.catch
-              (fun () ->
-                Lwt.catch
-                  (fun () -> Client.recv_branch_key_diff t)
-                  (fun _ -> raise Continue)
-                >>= f
-                >>= loop)
-              (function _ -> loop ())
-        in
-        Lwt.async loop;
-        Lwt.return t
+        let+ w = W.watch_key t.w key ?init f in
+        Key (key, w)
 
-      let unwatch _t watch =
-        let* () = Conn.write watch.Client.conn Unwatch.req_t () in
-        Client.close watch
+      let unwatch t w =
+        [%log.debug "[%a] Branch.unwatch" pp t];
+        match w with
+        | Global w ->
+            t.global.listeners <- t.global.listeners - 1;
+            if t.global.listeners = 0 then (
+              [%log.debug "[%a] Branch.unwatch: stop stream" pp t];
+              let* () = W.unwatch t.w w in
+              t.global.stop ())
+            else Lwt.return_unit
+        | Key (k, w) -> (
+            match Keys.find_opt t.keys k with
+            | None -> Lwt.return_unit
+            | Some cache ->
+                cache.listeners <- cache.listeners - 1;
+                if cache.listeners = 0 then (
+                  [%log.debug
+                    "[%a] Branch.unwatch: stop stream key=%a" pp t pp_key k];
+                  let* () = W.unwatch t.w w in
+                  Keys.remove t.keys k;
+                  cache.stop ())
+                else Lwt.return_unit)
 
-      let clear t = request t (module Clear) () >|= Error.unwrap "Branch.clear"
-      let close t = Client.close t
+      let clear t =
+        [%log.debug "[%a] Branch.clear" pp t];
+        request t.client (module Clear) () >|= Error.unwrap "Branch.clear"
     end
 
     module Slice = Store.Backend.Slice
 
     module Repo = struct
-      type nonrec t = Client.t
+      type t = Branch.t
 
-      let v config = connect config
-      let config (t : t) = t.Client.config
-      let close (t : t) = Client.close t
-      let contents_t (t : t) = t
-      let node_t (t : t) = t
-      let commit_t (t : t) = t
+      let v config =
+        let+ client = connect config in
+        Branch.v client
+
+      let config (t : t) = t.client.config
+      let close (t : t) = Client.close t.client
+      let contents_t (t : t) = t.client
+      let node_t (t : t) = t.client
+      let commit_t (t : t) = t.client
       let branch_t (t : t) = t
-      let batch (t : t) f = f t t t
+      let batch (t : t) f = f t.client t.client t.client
     end
 
     module Remote = Irmin.Backend.Remote.None (Commit.Key) (Store.Branch)
@@ -400,15 +560,17 @@ struct
 
   include Irmin.Of_backend (X)
 
-  let ping t = request t (module Commands.Ping) ()
+  let ping (t : repo) =
+    [%log.debug "[%a] ping" R.pp t];
+    request t.client (module Commands.Ping) ()
 
-  let export ?depth t =
-    request t (module Commands.Export) depth >|= Error.unwrap "export"
+  let export ?depth (t : repo) =
+    request t.client (module Commands.Export) depth >|= Error.unwrap "export"
 
-  let import t slice =
-    request t (module Commands.Import) slice >|= Error.unwrap "import"
+  let import (t : repo) slice =
+    request t.client (module Commands.Import) slice >|= Error.unwrap "import"
 
-  let close t = Client.close t
+  let close (t : repo) = R.close t
 
   let connect ?tls ?hostname uri =
     let conf = config ?tls ?hostname uri in
@@ -457,7 +619,9 @@ struct
     let apply ~info ?(path = Store.Path.empty) store t =
       let repo = repo store in
       let store = request_store store in
-      request repo (module Commands.Batch.Apply) ((store, path), info (), t)
+      request repo.client
+        (module Commands.Batch.Apply)
+        ((store, path), info (), t)
       >|= Error.unwrap "Batch.apply"
   end
 
@@ -527,7 +691,6 @@ struct
 
   let clone ~src ~dst =
     let repo = repo src in
-    let* repo = dup repo in
     let* () =
       Head.find src >>= function
       | None -> Branch.remove repo dst
@@ -543,23 +706,25 @@ struct
 
   let mem store path =
     let repo = repo store in
-    request repo (module Commands.Store.Mem) (request_store store, path)
+    request repo.client (module Commands.Store.Mem) (request_store store, path)
     >|= Error.unwrap "mem"
 
   let mem_tree store path =
     let repo = repo store in
-    request repo (module Commands.Store.Mem_tree) (request_store store, path)
+    request repo.client
+      (module Commands.Store.Mem_tree)
+      (request_store store, path)
     >|= Error.unwrap "mem_tree"
 
   let find store path =
     let repo = repo store in
-    request repo (module Commands.Store.Find) (request_store store, path)
+    request repo.client (module Commands.Store.Find) (request_store store, path)
     >|= Error.unwrap "find"
 
   let remove_exn ?clear ?retries ?allow_empty ?parents ~info store path =
     let parents = Option.map (List.map (fun c -> Commit.hash c)) parents in
     let repo = repo store in
-    request repo
+    request repo.client
       (module Commands.Store.Remove)
       ( ((clear, retries), (allow_empty, parents)),
         (request_store store, path),
@@ -575,7 +740,9 @@ struct
   let find_tree store path =
     let repo = repo store in
     let+ concrete =
-      request repo (module Commands.Store.Find_tree) (request_store store, path)
+      request repo.client
+        (module Commands.Store.Find_tree)
+        (request_store store, path)
       >|= Error.unwrap "find_tree"
     in
     Option.map Tree.of_concrete concrete

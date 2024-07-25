@@ -2421,16 +2421,7 @@ let suite sleep (speed, x) =
     (* Disabled for flakiness. See https://github.com/mirage/irmin/issues/1090. *)
     not
       (List.mem ~equal:String.equal (Suite.name x)
-         [
-           "FS";
-           "FS.UNIX";
-           "GIT";
-           "GIT.UNIX";
-           "HTTP.FS";
-           "HTTP.FS.UNIX";
-           "HTTP.GIT";
-           "HTTP.GIT.UNIX";
-         ])
+         [ "FS"; "FS.UNIX"; "GIT"; "GIT.UNIX" ])
   in
   suite'
     ([

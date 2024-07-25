@@ -15,22 +15,38 @@
  *)
 open Import
 
+(* mostlry copy/pasted from Irmin_server_unix.IO but we want to avoid the dependencies *)
 type flow = Conduit_lwt_unix.flow
-type ic = Conduit_lwt_unix.ic
-type oc = Conduit_lwt_unix.oc
-type ctx = Conduit_lwt_unix.ctx
+type 'a t = { id : int; t : 'a Lwt_io.channel }
+type ic = Lwt_io.input t
+type oc = Lwt_io.output t
 
 exception Timeout = Lwt_unix.Timeout
 
+let pp_in ppf { id; _ } = Fmt.pf ppf "C%d" id
+let pp_out ppf { id; _ } = Fmt.pf ppf "C%d" id
+let is_closed { t; _ } = Lwt_io.is_closed t
+let write_int64_be { t; _ } = Lwt_io.BE.write_int64 t
+let read_int64_be { t; _ } = Lwt_io.BE.read_int64 t
+let flush { t; _ } = Lwt_io.flush t
+let write { t; _ } = Lwt_io.write t
+let close_in { t; _ } = Lwt_io.close t
+let close_out { t; _ } = Lwt_io.close t
+let read_into_exactly { t; _ } = Lwt_io.read_into_exactly t
+let write_char { t; _ } = Lwt_io.write_char t
+let read_char { t; _ } = Lwt_io.read_char t
+
+let new_id =
+  let c = ref (-1) in
+  fun () ->
+    incr c;
+    !c
+
+(* extra stuff *)
+
 let default_ctx = Conduit_lwt_unix.default_ctx
-let is_closed (x : ic) = Lwt_io.is_closed x
-let write_int64_be = Lwt_io.BE.write_int64
-let read_int64_be = Lwt_io.BE.read_int64
-let flush = Lwt_io.flush
-let write = Lwt_io.write
-let read_into_exactly = Lwt_io.read_into_exactly
-let write_char = Lwt_io.write_char
-let read_char = Lwt_io.read_char
+
+type ctx = Conduit_lwt_unix.ctx
 
 (* The websocket protocol reads fully formed protocol packets off of
    one end of a pipe given to irmin-server-internal and converts the
@@ -43,7 +59,7 @@ module Websocket_protocol = struct
 
   let read_exactly ~length ic =
     let buff = Bytes.create length in
-    read_into_exactly ic buff 0 length >|= fun () -> Bytes.to_string buff
+    Lwt_io.read_into_exactly ic buff 0 length >|= fun () -> Bytes.to_string buff
 
   let read_handshake ic =
     Lwt_io.BE.read_int64 ic >>= fun b_length ->
@@ -58,7 +74,7 @@ module Websocket_protocol = struct
     Lwt_io.read_char ic >>= fun cmd_length ->
     let cl = int_of_char cmd_length in
     read_exactly ~length:cl ic >>= fun cmd ->
-    read_int64_be ic >>= fun b_length ->
+    Lwt_io.BE.read_int64 ic >>= fun b_length ->
     let length = Int64.to_int b_length in
     read_exactly ~length ic >|= fun data ->
     let buf = Buffer.create (1 + cl + 8 + length) in
@@ -98,19 +114,22 @@ let websocket_to_flow client =
   let output_ic, output_oc = Lwt_io.pipe () in
   Lwt.async (fun () -> fill_ic input_oc client);
   Lwt.async (fun () -> send_oc true output_ic client);
-  (input_ic, output_oc)
+  let id = new_id () in
+  ({ id; t = input_ic }, { id; t = output_oc })
 
 let connect ~ctx (client : Irmin_client.addr) =
   let open Lwt.Infix in
   match client with
   | (`TLS _ | `TCP _ | `Unix_domain_socket _) as client ->
       Conduit_lwt_unix.connect ~ctx (client :> Conduit_lwt_unix.client)
-      >|= fun (_, ic, oc) -> (ic, oc)
+      >|= fun (_, ic, oc) ->
+      let id = new_id () in
+      ({ id; t = ic }, { id; t = oc })
   | `Ws (Some (host, port), uri) ->
       Websocket_lwt_unix.connect ~ctx (`TCP (host, port)) (Uri.of_string uri)
       >|= fun ws -> websocket_to_flow ws
   | `Ws _ -> failwith "The Unix client requires a IP address and port number"
 
-let close (c : ic * oc) = Conduit_lwt_server.close c
+let close ((ic, oc) : ic * oc) = Conduit_lwt_server.close (ic.t, oc.t)
 let with_timeout = Lwt_unix.with_timeout
 let time = Unix.time

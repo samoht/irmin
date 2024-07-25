@@ -21,52 +21,37 @@ module Info = Info (Client.Info)
 
 let info = Info.v
 
-let () =
-  let style_renderer = `None in
-  Fmt_tty.setup_std_outputs ~style_renderer ();
-  Logs.set_level (Some Logs.Error);
-  Logs.set_reporter (Logs_fmt.reporter ())
+module KV = Irmin_mem.KV.Make (Irmin.Contents.String)
+module Store = Irmin_client_unix.Make (KV)
 
-module type R = sig
-  val pid : int
-  val uri : Uri.t
-  val kind : string
-end
-
-module Make (R : R) = struct
-  let () = at_exit (fun () -> try Unix.kill R.pid Sys.sigint with _ -> ())
-  let config = Irmin_client_unix.config R.uri
-  let client = Lwt_main.run (Client.Repo.v config)
-  let clean ~config:_ = Client.Branch.remove client "main"
-
-  module X = Irmin_mem.KV.Make (Irmin.Contents.String)
-  module Store = Irmin_client_unix.Make (X)
-
-  let suite =
-    Irmin_test.Suite.create_generic_key ~name:R.kind
-      ~store:(module Store)
-      ~config ~clean ()
-end
-
-let kind, pid, uri = run_server `Unix_domain
-
-module Unix_socket = Make (struct
-  let pid = pid
-  let uri = uri
-  let kind = kind
-end)
-
-module Tcp_socket = Make (struct
-  let kind, pid, uri = run_server `Tcp
-end)
-
-module Websocket = Make (struct
-  let kind, pid, uri = run_server `Websocket
-end)
-
-let config = Irmin_client_unix.config uri
-let client = Lwt_main.run (Client.Repo.v config)
-let client () = Client.dup client
+let suite kind =
+  let kind, uri, serve = run_server kind in
+  let config = Irmin_client_unix.config uri in
+  let server = ref None in
+  let init ~config:_ =
+    let* () =
+      match !server with
+      | Some s ->
+          Fmt.epr "The previous server has not stopped properly";
+          s ()
+      | None -> Lwt.return ()
+    in
+    let* serve = serve () in
+    server := Some serve;
+    let* client = Client.Repo.v config in
+    let* _ = Client.Branch.remove client "main" in
+    Client.close client
+  in
+  let clean ~config:_ =
+    match !server with
+    | None -> failwith "No server started!"
+    | Some stop ->
+        let+ () = stop () in
+        server := None
+  in
+  Irmin_test.Suite.create_generic_key ~name:kind
+    ~store:(module Store)
+    ~init ~config ~clean ()
 
 let error =
   Alcotest.testable (Fmt.using Error.to_string Fmt.string) (fun a b ->
@@ -78,31 +63,27 @@ let ty t =
     (fun a b -> Irmin.Type.(unstage (equal t)) a b)
 
 let ping () =
-  let open Client in
-  let* client = client () in
+  let _, uri, serve = run_server `Unix_domain in
+  let* stop = serve () in
+  let config = Irmin_client_unix.config uri in
+  let* client = Client.Repo.v config in
   Logs.debug (fun l -> l "BEFORE PING");
-  let+ r = ping client in
+  let* r = Client.ping client in
   Logs.debug (fun l -> l "AFTER PING");
+  let* () = Client.close client in
+  let+ () = stop () in
   Alcotest.(check (result unit error)) "ping" (Ok ()) r
 
 let misc = [ ("ping", `Quick, ping) ]
 let misc = [ ("misc", misc) ]
 
-let () =
-  let slow = Sys.getenv_opt "SLOW" |> Option.is_some in
-  let only = Sys.getenv_opt "ONLY" in
+let tests =
   let tests =
-    match only with
-    | Some "ws" -> [ (`Quick, Websocket.suite) ]
-    | Some "tcp" -> [ (`Quick, Tcp_socket.suite) ]
-    | Some "unix" -> [ (`Quick, Unix_socket.suite) ]
-    | Some s -> failwith ("Invalid selection: " ^ s)
-    | None ->
-        [
-          (`Quick, Unix_socket.suite);
-          (`Quick, Tcp_socket.suite);
-          (`Quick, Websocket.suite);
-        ]
+    [
+      (`Quick, suite `Unix_domain);
+      (`Quick, suite `Tcp);
+      (`Quick, suite `Websocket);
+    ]
   in
   Lwt_main.run
-    (Irmin_test.Store.run "irmin-server" ~sleep:Lwt_unix.sleep ~slow ~misc tests)
+  @@ Irmin_test.Store.run "irmin-server" ~sleep:Lwt_unix.sleep ~misc tests

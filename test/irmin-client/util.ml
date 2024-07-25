@@ -14,14 +14,23 @@
  * OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
  *)
 
-open Lwt.Infix
+open Lwt.Syntax
 module Store = Irmin_mem.KV.Make (Irmin.Contents.String)
 module Client = Irmin_client_unix.Make (Store)
 module Server = Irmin_server_unix.Make (Store)
 
-let test name f client _switch () =
-  Logs.debug (fun l -> l "Running: %s" name);
-  f client
+let rec echo uri =
+  Lwt.catch
+    (fun () ->
+      let config = Irmin_client_unix.config uri in
+      let* client = Client.Repo.v config in
+      let* _ = Client.Repo.heads client in
+      Client.close client)
+    (function
+      | Unix.Unix_error (Unix.ECONNREFUSED, "connect", "") ->
+          let* () = Lwt_unix.sleep 0.1 in
+          echo uri
+      | e -> Lwt.reraise e)
 
 let run_server s =
   let kind, uri =
@@ -33,18 +42,17 @@ let run_server s =
         ("Unix_domain", Uri.of_string ("unix://" ^ sock))
     | `Tcp -> ("Tcp", Uri.of_string "tcp://localhost:90992")
   in
-  match Lwt_unix.fork () with
-  | 0 ->
-      let () = Irmin.Backend.Watch.set_listen_dir_hook Irmin_watcher.hook in
-      let conf = Irmin_mem.config () in
-      Lwt_main.run (Server.v ~uri conf >>= Server.serve);
-      (kind, 0, uri)
-  | n ->
-      Unix.sleep 3;
-      (kind, n, uri)
+  let serve () =
+    let stop, u = Lwt.task () in
+    let conf = Irmin_mem.config () in
+    let* t = Server.v ~uri conf in
+    let v = Server.serve ~stop t in
+    Lwt.async (fun () -> v);
+    let+ () = echo uri in
 
-let suite client all =
-  List.map
-    (fun (name, speed, f) ->
-      Alcotest_lwt.test_case name speed (test name f client))
-    all
+    fun () ->
+      Lwt.wakeup u ();
+      Lwt.cancel v;
+      v
+  in
+  (kind, uri, serve)

@@ -233,7 +233,9 @@ module Make_helpers (S : Generic_key) = struct
         let* () = x.init ~config in
         let* repo = S.Repo.v config in
         repo_ptr := Some repo;
+        [%logs.info "TEST: START"];
         let* () = test repo in
+        [%logs.info "TEST: DONE "];
         let* () =
           (* [test] might have already closed the repo. That
              [ignore_thunk_errors] shall be removed as soon as all stores

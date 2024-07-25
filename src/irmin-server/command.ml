@@ -14,6 +14,7 @@
  * OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
  *)
 
+open Import
 open Lwt.Syntax
 open Lwt.Infix
 include Command_intf
@@ -58,7 +59,9 @@ struct
       type req = unit [@@deriving irmin]
       type res = unit [@@deriving irmin]
 
-      let run conn _ctx _ () = Return.ok conn
+      let run conn _ctx _ () =
+        [%log.debug "ping"];
+        Return.ok conn
     end
 
     module Export = struct
@@ -483,12 +486,9 @@ struct
                 Lwt.catch
                   (fun () ->
                     let* () = Conn.Response.write_header conn { status = 0 } in
-                    let* () =
-                      Conn.write conn
-                        (Irmin.Type.pair Store.Branch.t diff_t)
-                        (key, diff)
-                    in
-                    IO.flush conn.oc)
+                    Conn.write conn
+                      (Irmin.Type.pair Store.Branch.t diff_t)
+                      (key, diff))
                   (fun _ -> Lwt.return_unit))
           in
           ctx.branch_watch <- Some watch;
@@ -516,8 +516,7 @@ struct
                 Lwt.catch
                   (fun () ->
                     let* () = Conn.Response.write_header conn { status = 0 } in
-                    let* () = Conn.write conn diff_t diff in
-                    IO.flush conn.oc)
+                    Conn.write conn diff_t diff)
                   (fun _ -> Lwt.return_unit))
           in
           ctx.branch_watch <- Some watch;
